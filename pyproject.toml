@@ -44,7 +44,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["loan_agent"]
-omit = ["app.py", "tests/*"]
+omit = ["app.py", "agentic_app.py", "tests/*"]
 
 [tool.coverage.report]
 show_missing = true

@@ -70,7 +70,8 @@ loan-agent/
 ├── requirements.txt            # Production application dependencies
 ├── requirements-dev.txt        # Development and testing dependencies (pytest, pytest-cov)
 ├── policy_v1.md                # Apex Financial Credit Underwriting Policy (US-2026)
-├── app.py                      # Streamlit application entrypoint
+├── app.py                      # Manual credit underwriting workbench
+├── agentic_app.py              # Autonomous LangGraph agentic underwriting workbench
 ├── .streamlit/
 │   └── config.toml             # Streamlit Enterprise light theme configuration
 ├── loan_agent/                 # Core reusable Python package
@@ -113,7 +114,22 @@ loan-agent/
 
 ---
 
-### 2. Financial Ratio Calculator (`calculator.py`)
+### 2. Autonomous Agentic Workbench (`agentic_app.py`)
+- **Direct Pipeline Trigger**: Submitting an application automatically triggers the 6-node LangGraph pipeline.
+- **Intelligent Dual-Queue Routing**:
+  - **`AUTO_APPROVED` & `AUTO_DENIED`**: Immediately bypass the pending queue and settle into the **Adjudicated / Completed Archive** with permanent audit logging.
+  - **`ESCALATE` Only**: Halts at the LangGraph breakpoint before `human_review_node` and appears in the **Pending Loan Review Queue** for credit committee adjudication.
+- **Auto-Populated Modal Dossier**:
+  - **Bank Cash Flow Tab**: Classifications are auto-populated directly from graph state (`categorized_transactions` produced by the LLM Bank Statement Analyzer).
+  - **Financial Ratios Tab**: Ratios are pre-calculated and auto-populated from graph state with on-demand `🔄 Recalculate Ratios` support.
+  - **AI Agent Assessment Tab**: Provides full visibility into the AI's recommendation, confidence score, underwriter memo, policy citations, bank analyst narrative, and complete step-by-step execution log.
+- **Human Override & LangGraph Resumption**:
+  - Credit officers review the AI memo and enter their mandatory justification notes.
+  - Clicking **`✅ Approve`** or **`❌ Reject`** updates the graph state (`human_reviewer_decision`, `human_reviewer_notes`) and resumes execution via `graph.invoke(None)`, finalizing as `HUMAN_APPROVED` or `HUMAN_DENIED`.
+
+---
+
+### 3. Financial Ratio Calculator (`calculator.py`)
 All financial calculations are isolated in individual, pure functions:
 
 | Function | Purpose | Formula / Logic |
@@ -136,7 +152,7 @@ All financial calculations are isolated in individual, pure functions:
 
 ---
 
-### 3. Agentic LangGraph Underwriting Pipeline (`graph_workflow.py`)
+### 4. Agentic LangGraph Underwriting Pipeline (`graph_workflow.py`)
 A 6-node state machine orchestrating AI-driven credit analysis:
 - **Node 1 (`verify_fcra_consent_node`)**: Regulatory gate ensuring explicit borrower consent before accessing bureau or banking data.
 - **Node 2 (`fetch_external_data_parallel_node`)**: Parallel retrieval of Experian credit records and Plaid bank ledgers.
@@ -199,25 +215,61 @@ pip install -r requirements-dev.txt
 ```
 
 ### 3. Configure Environment Variables
-Create or edit `.env` in the root directory:
+Create or edit `.env` in the root directory to configure the LLM provider for the agentic workflow:
 ```bash
-# Optional for LangGraph Agentic Execution (defaults to mock/local if unset)
-OPENAI_API_KEY=your_api_key_here
-# Optional custom endpoint (e.g. Groq, Ollama, vLLM)
-OPENAI_BASE_URL=https://api.groq.com/openai/v1
+# LLM Provider Configuration (Defaults to Groq's OpenAI-compatible endpoint)
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=openai/gpt-oss-120b
+
+# Your API Key (Groq, OpenAI, or compatible gateway)
+GROQ_API_KEY=gsk_your_groq_api_key_here
+# Alternatively: OPENAI_API_KEY=sk-... or LLM_API_KEY=...
 ```
 
 ---
 
-## 🖥️ Running the Application
+## 🖥️ Running the Applications
 
-Launch the Streamlit Enterprise Workbench:
+Apex Financial provides two side-by-side implementations to demonstrate the evolution from manual credit underwriting to autonomous agentic decisioning:
+
+### Option 1: Autonomous Agentic Workbench (`agentic_app.py`)
+
+In this mode, the loan submission triggers the 6-node LangGraph pipeline. Automated decisions (`AUTO_APPROVED` / `AUTO_DENIED`) settle immediately into the archive, while complex files (`ESCALATE`) halt at the Human-in-the-Loop breakpoint and populate the Underwriter Review Queue with pre-populated AI assessments.
+
 ```bash
-streamlit run app.py
+streamlit run agentic_app.py
 ```
 Open your browser at `http://localhost:8501`.
 
-### Recommended Walkthrough Flow:
+#### Recommended Agentic Walkthrough:
+1. Navigate to the **Applicant Portal**.
+2. Click **`⚡ Autofill Demo Persona`**:
+   - **Sarah Jenkins (Prime)**: Click Submit → AI Underwriter approves automatically per Tier 1 rules → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_APPROVED`.
+   - **Marcus Vance (Subprime)**: Click Submit → AI Underwriter detects knockout criteria (FICO < 620, DTI > 45%, 4 NSF fees) → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_DENIED` and ECOA adverse action notices.
+   - **David Chen (Nuanced / High-Value)**: Click Submit → loan amount ($35,000) and income variance (>15%) trigger Section 4 escalation → graph pauses execution before `human_review_node` → appears in the **Pending Loan Review Queue**.
+3. Switch to the **Underwriter Desk** via the sidebar navigation.
+4. Click **Review & Adjudicate ↗** on David Chen's escalated file:
+   - **`🤖 AI Assessment` Tab**: Review the AI recommendation (`ESCALATE`), confidence score, detailed underwriter memorandum, policy citations, bank analyst narrative, and complete LangGraph execution trace.
+   - **`💳 Bank Cash Flow` Tab**: Observe how all transactions are **auto-populated and pre-classified** by the AI Bank Statement Analyst agent.
+   - **`📊 Financial Ratios` Tab**: Observe how all financial metrics (*Post-Loan DTI*, *Payment Cushion Ratio*, *Income Variance*) are **auto-populated from the graph state** without needing manual computation.
+5. In the **Human Credit Officer Determination** action panel on the right:
+   - Review the AI Agent Escalation briefing callout.
+   - Enter your justification notes into **Credit Officer Justification** (e.g., *"Verified W-2 documentation confirms valid bonus structure; approved 41.8% DTI within near-prime tier"*).
+   - Click **`✅ Approve`** (or **`❌ Reject`**).
+   - The system updates graph state and resumes execution, finalizing the loan as `HUMAN_APPROVED`.
+6. Navigate to the **Adjudicated / Completed Archive** to inspect the full audit trail and officer notes.
+
+---
+
+### Option 2: Manual Underwriting Workbench (`app.py`)
+
+In this baseline mode, the credit officer performs the entire manual workflow from scratch (manual bank ledger classification, manual ratio calculation, and manual adjudication).
+
+```bash
+streamlit run app.py
+```
+
+#### Recommended Manual Walkthrough:
 1. Navigate to the **Applicant Portal**.
 2. Click **`⚡ Autofill Demo Persona`** and select **Sarah Jenkins** (or Marcus Vance / David Chen).
 3. Observe how the **Calculated Installment** updates instantly with any change to the requested loan amount.
