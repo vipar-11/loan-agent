@@ -38,3 +38,13 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --strict-markers"
 pythonpath = ["."]
+markers = [
+    "integration: marks tests as live LLM integration tests",
+]
+
+[tool.coverage.run]
+source = ["loan_agent"]
+omit = ["app.py", "tests/*"]
+
+[tool.coverage.report]
+show_missing = true

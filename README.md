@@ -233,17 +233,20 @@ Open your browser at `http://localhost:8501`.
 
 ## 🧪 Testing & Validation
 
-The project includes an automated test suite with 72 unit tests across calculations, external API mocks, Pydantic schemas, LangGraph workflow nodes, and UI helpers:
+The project includes both fast deterministic unit tests and live multi-agent LangGraph integration tests:
 
 ```bash
-# Run full unit test suite
-pytest
+# 1. Run fast unit test suite (72 unit tests, zero API cost)
+pytest -m "not integration"
 
-# Run tests with code coverage report
-pytest --cov=loan_agent
+# 2. Run unit tests with code coverage report
+pytest --cov
 
-# Run specific test module
-pytest tests/test_calculator.py
+# 3. Run live LangGraph integration tests across the 3 borrower personas:
+#    - Sarah Jenkins (AUTO_APPROVED)
+#    - Marcus Vance (AUTO_DENIED with ECOA adverse action notices)
+#    - David Chen (ESCALATE, StateGraph breakpoint pause & human review resumption)
+pytest tests/test_integration_workflow.py
 ```
 
 ---

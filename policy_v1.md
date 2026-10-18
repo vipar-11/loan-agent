@@ -1,26 +1,26 @@
 # APEX FINANCIAL — UNSECURED PERSONAL LOAN UNDERWRITING POLICY (US-2026)
-**Product Scope:** Unsecured Personal Loans from $2,000 to $50,000 (Standard 36-Month Term, 12.0% Representative APR).
+**Product Scope:** Unsecured Personal Installment Loans from $2,000 to $50,000 (Standard 36-Month Term, 12.0% Representative APR).
 
 ## Section 1: Mandatory Compliance & Consent (FCRA / GLBA)
-* **Rule 1.1 (Explicit Consent):** Explicit applicant consent (`fcra_consent = True`) is strictly required prior to invoking any external credit bureau or bank cash-flow APIs. Any application submitted without consent must be immediately rejected (`REJECT_NO_CONSENT`).
+* **Rule 1.1 (Explicit Consumer Authorization):** Prior to initiating any inquiry with consumer reporting agencies (credit bureaus) or accessing electronic deposit account records, explicit written or electronic authorization must be obtained from the applicant pursuant to the Fair Credit Reporting Act (FCRA) and Gramm-Leach-Bliley Act (GLBA). Applications lacking verifiable consumer consent cannot be processed and must be terminated immediately.
 
 ## Section 2: Hard Knockout Criteria (Automatic Denial)
-An application must be **DENIED** immediately if ANY of the following conditions are triggered:
-* **Rule 2.1 (Credit Score Floor):** Applicant FICO Score is less than 620.
-* **Rule 2.2 (Maximum DTI Cap):** Reconciled Post-Loan Debt-to-Income (`post_loan_dti`) ratio exceeds 45.0%.
-* **Rule 2.3 (Derogatory Credit Marks):** Applicant has an active bankruptcy (`has_active_bankruptcy = True`) on file, OR has more than 1 delinquency (30+ days past due) across all tradelines in the last 12 months (`total_delinquencies_12m > 1`).
-* **Rule 2.4 (Cash Flow Distress):** Applicant has more than 2 punitive Non-Sufficient Funds (NSF) or overdraft fee events in the past 90 days (`nsf_count_90d > 2`).
+An application fails institutional credit standards and must be declined automatically if any of the following conditions exist:
+* **Rule 2.1 (Minimum Credit Score Threshold):** The applicant's bureau FICO Score is below 620.
+* **Rule 2.2 (Maximum Debt-to-Income Cap):** The applicant's reconciled post-loan Debt-to-Income (DTI) ratio exceeds 45.0%.
+* **Rule 2.3 (Derogatory Credit History):** The applicant has an active bankruptcy filing on record, or has accumulated more than 1 delinquency (30 days or more past due) across all reported tradelines during the preceding 12 months.
+* **Rule 2.4 (Severe Depository Cash Flow Distress):** The applicant's deposit accounts reflect more than 2 punitive Non-Sufficient Funds (NSF) or overdraft fee charges within the trailing 90-day period.
 
 ## Section 3: Standard Auto-Approval Criteria
-An application is eligible for immediate **AUTO-APPROVAL** (`APPROVE`) if ALL of the following criteria are met:
-* **Rule 3.1 (Prime Credit Tier):** FICO Score is 680 or higher.
-* **Rule 3.2 (Healthy Debt Load):** Reconciled Post-Loan DTI (`post_loan_dti`) is 36.0% or lower.
-* **Rule 3.3 (Loan Sizing Cap):** Requested loan amount is $25,000 or less, AND does not exceed 30% of verified annualized income (`verified_monthly_income * 12`).
-* **Rule 3.4 (Liquidity & Buffer):** Zero NSF/overdraft events in the last 90 days (`nsf_count_90d == 0`), AND the Payment Cushion Ratio (`payment_cushion_ratio` = Average Ending Monthly Balance / New Monthly Loan Payment) is at least 2.0x.
-* **Rule 3.5 (Income Consistency):** Income Variance (`income_variance_pct`) between stated monthly income and bank-verified monthly income does not exceed 15.0%.
+An application qualifies for automated credit approval if all of the following prime underwriting criteria are satisfied:
+* **Rule 3.1 (Prime Credit Profile):** The applicant maintains a bureau FICO Score of 680 or higher.
+* **Rule 3.2 (Conservative Debt Burden):** Reconciled post-loan Debt-to-Income (DTI) does not exceed 36.0%.
+* **Rule 3.3 (Prudent Loan Sizing):** The requested principal amount is $25,000 or less, and does not exceed 30.0% of the applicant's verified annualized net income.
+* **Rule 3.4 (Depository Reserve & Stability):** The applicant reflects zero punitive NSF or overdraft occurrences within the trailing 90 days, and maintains a Payment Cushion Ratio (average ending monthly balance divided by the new monthly loan payment) of at least 2.0x.
+* **Rule 3.5 (Income Verification Consistency):** The variance between stated gross monthly income and bank-verified net monthly deposits does not exceed 15.0%.
 
 ## Section 4: Manual Underwriting Escalation (Grey Area / Human-in-the-Loop)
-If an application passes all Section 2 Hard Knockouts (zero knockout violations) but fails one or more Section 3 Auto-Approval rules, it must be routed to **ESCALATE** for Human Underwriter review under the following guidelines:
-* **Rule 4.1 (Near-Prime Credit or Elevated DTI):** FICO Score is between 620 and 679, OR Reconciled Post-Loan DTI is between 36.01% and 45.00%, OR `nsf_count_90d` is 1 or 2.
-* **Rule 4.2 (High-Value Loan Gate):** Requested loan amount exceeds $25,000 (up to the $50,000 product maximum), requiring manual executive sign-off even if credit metrics are prime.
-* **Rule 4.3 (Stated vs. Verified Net Income Mismatch):** `income_variance_pct` exceeds 15.0% (e.g., due to tax/401k withholding between gross stated salary and net direct deposits), requiring the human underwriter to verify a W-2 or paystub before final approval.
+Applications that clear all Section 2 Hard Knockout standards but fail to meet one or more Section 3 Auto-Approval requirements must be escalated to a Senior Credit Underwriter for manual review and exception adjudication under the following circumstances:
+* **Rule 4.1 (Near-Prime Credit or Marginal Leverage):** The applicant's FICO Score falls between 620 and 679, the reconciled post-loan DTI ratio is between 36.01% and 45.00%, or deposit accounts exhibit 1 or 2 isolated NSF/overdraft occurrences in the trailing 90 days.
+* **Rule 4.2 (High-Exposure Principal Gate):** The requested loan amount exceeds $25,000 (up to the $50,000 maximum facility limit), mandating secondary officer concurrence regardless of prime credit quality.
+* **Rule 4.3 (Income Variance Investigation):** Discrepancy between stated gross salary and bank ledger deposits exceeds 15.0% (commonly attributable to payroll deductions, taxes, retirement withholdings, or bonus distributions), requiring physical examination of recent W-2s, pay stubs, or tax returns prior to credit approval.
