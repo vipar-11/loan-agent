@@ -15,9 +15,6 @@ Teaching Highlights Included:
 5. Production Error Handling: Combines LangGraph `RetryPolicy` with graceful `try/except` fallback
    that routes unexpected failures safely to `human_review_node` (ESCALATE).
 """
-from langchain_core.tracers import log_stream
-from langchain_core.tracers import log_stream
-from langchain_core.tracers import log_stream
 import os
 import json
 from pathlib import Path
@@ -30,20 +27,28 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import RetryPolicy
 
-from state import (
-    LoanApplicationState,
-)
-
-from schema import (
-    BankStatementAnalysisOutput,
-    UnderwritingOutput,
-)
-
-from mock_apis import (
-    fetch_experian_credit_report,
-    fetch_plaid_bank_statement,
-    prefilter_underwriting_transactions,
-)
+try:
+    from loan_agent.state import LoanApplicationState
+    from loan_agent.schema import (
+        BankStatementAnalysisOutput,
+        UnderwritingOutput,
+    )
+    from loan_agent.mock_apis import (
+        fetch_experian_credit_report,
+        fetch_plaid_bank_statement,
+        prefilter_underwriting_transactions,
+    )
+except ImportError:
+    from .state import LoanApplicationState
+    from .schema import (
+        BankStatementAnalysisOutput,
+        UnderwritingOutput,
+    )
+    from .mock_apis import (
+        fetch_experian_credit_report,
+        fetch_plaid_bank_statement,
+        prefilter_underwriting_transactions,
+    )
 
 # Load .env file automatically if present
 load_dotenv()
@@ -52,8 +57,15 @@ load_dotenv()
 # HELPER: Load Underwriting Policy Markdown & Initialize OpenAI-Compatible LLM
 # ---------------------------------------------------------------------------
 def load_policy_document() -> str:
-    policy_path = Path(__file__).parent / "policy_v1.md"
-    return policy_path.read_text(encoding="utf-8")
+    candidates = [
+        Path(__file__).parent / "policy_v1.md",
+        Path(__file__).resolve().parent.parent.parent / "policy_v1.md",
+        Path.cwd() / "policy_v1.md",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    raise FileNotFoundError("Underwriting policy document 'policy_v1.md' not found.")
 
 
 def get_llm(
@@ -626,7 +638,7 @@ def build_underwriting_graph(checkpointer=None):
     builder.add_node(
         "bank_statement_analyzer_agent",
         bank_statement_analyzer_agent,
-        retry=llm_retry_policy,
+        retry_policy=llm_retry_policy,
     )
     builder.add_node(
         "calculate_financial_ratios_node", calculate_financial_ratios_node
@@ -634,7 +646,7 @@ def build_underwriting_graph(checkpointer=None):
     builder.add_node(
         "underwriter_agent_node",
         underwriter_agent_node,
-        retry=llm_retry_policy,
+        retry_policy=llm_retry_policy,
     )
     builder.add_node("human_review_node", human_review_node)
     builder.add_node("finalize_application_node", finalize_application_node)
@@ -684,24 +696,3 @@ def build_underwriting_graph(checkpointer=None):
         checkpointer=checkpointer,
         interrupt_before=["human_review_node"],
     )
-
-
-# ---------------------------------------------------------------------------
-# HELPER FOR MODE 1 (LEGACY MANUAL WORKBENCH - NO AI)
-# ---------------------------------------------------------------------------
-# def fetch_manual_mode_raw_data(app_input: LoanApplicationState) -> LoanApplicationState:
-#     """
-#     Used in 'Mode 1: Legacy Manual Workbench'.
-#     Runs ONLY Node 1 (Consent Gate) and Node 2 (Raw Bureau & Bank Fetchers) without any LLM
-#     or Python ratio calculations, forcing the human reviewer to do the math by hand.
-#     """
-#     state = dict(app_input)
-#     consent_res = validate_consent_node(state)
-#     state.update(consent_res)
-#     if not state.get("fcra_consent", False):
-#         return state
-
-#     state.update(pull_credit_bureau_node(state))
-#     state.update(pull_raw_bank_transactions_node(state))
-#     state["final_status"] = "PENDING_MANUAL_UNDERWRITER"
-#     return state

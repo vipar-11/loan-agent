@@ -24,12 +24,12 @@ from typing import Dict, Any, List, Optional
 import pandas as pd
 import streamlit as st
 
-from mock_apis import (
+from loan_agent.mock_apis import (
     APPLICANT_PROFILES,
     fetch_experian_credit_report,
     fetch_plaid_bank_statement,
 )
-from calculator import (
+from loan_agent.calculator import (
     compute_financial_ratios,
     calculate_monthly_installment,
 )

@@ -65,18 +65,29 @@ flowchart TD
 ## 📁 Repository Structure
 
 ```
-loan-approval/
-├── app.py                  # Streamlit Enterprise Underwriting Workbench
-├── calculator.py           # Pure Python SR 11-7 Financial Ratio Calculator
-├── graph_workflow.py       # 6-Node LangGraph Agentic Underwriting Workflow
-├── mock_apis.py            # Experian & Plaid REST API Mock Providers & Personas
-├── schema.py               # Pydantic Structured Output Schemas (Agents 1 & 2)
-├── state.py                # LangGraph LoanApplicationState TypedDict
-├── policy_v1.md            # Apex Financial Credit Underwriting Policy (US-2026)
-├── requirements.txt        # Python Dependencies
-├── .env                    # Environment Configuration (API Keys, Endpoints)
-└── .streamlit/
-    └── config.toml         # Streamlit Enterprise Light Theme Configuration
+loan-agent/
+├── pyproject.toml              # Modern PEP 517/621 packaging & pytest configuration
+├── requirements.txt            # Production application dependencies
+├── requirements-dev.txt        # Development and testing dependencies (pytest, pytest-cov)
+├── policy_v1.md                # Apex Financial Credit Underwriting Policy (US-2026)
+├── app.py                      # Streamlit application entrypoint
+├── .streamlit/
+│   └── config.toml             # Streamlit Enterprise light theme configuration
+├── loan_agent/                 # Core reusable Python package
+│   ├── __init__.py             # Package exports & public API
+│   ├── calculator.py           # Pure Python SR 11-7 Financial Ratio Calculator
+│   ├── graph_workflow.py       # 6-Node LangGraph Agentic Underwriting Workflow
+│   ├── mock_apis.py            # Experian & Plaid REST API Mock Providers & Personas
+│   ├── schema.py               # Pydantic Structured Output Schemas (Agents 1 & 2)
+│   └── state.py                # LangGraph LoanApplicationState TypedDict
+└── tests/                      # Automated unit & integration test suite
+    ├── __init__.py
+    ├── conftest.py             # Shared pytest fixtures & mock payloads
+    ├── test_calculator.py      # Unit tests for financial ratio algorithms
+    ├── test_mock_apis.py       # Unit tests for bureau/bank APIs & pre-filtering
+    ├── test_schema.py          # Unit tests for Pydantic schemas & state models
+    ├── test_workflow.py        # Unit tests for LangGraph nodes, routing, fallback
+    └── test_app_helpers.py     # Unit tests for presentation layer & formatters
 ```
 
 ---
@@ -173,14 +184,18 @@ The system includes 3 pre-configured demo borrower profiles accessible via the *
 
 ### 1. Clone & Set Up Virtual Environment
 ```bash
-cd /Users/vipar/Data/projects/loan-approval
+cd /Users/vipar/Data/projects/loan-agent
 python3 -m venv venv
 source venv/bin/activate
 ```
 
 ### 2. Install Dependencies
 ```bash
+# Core application dependencies
 pip install -r requirements.txt
+
+# Development and test dependencies (pytest, pytest-cov)
+pip install -r requirements-dev.txt
 ```
 
 ### 3. Configure Environment Variables
@@ -218,15 +233,17 @@ Open your browser at `http://localhost:8501`.
 
 ## 🧪 Testing & Validation
 
-The project includes unit and integration tests verifying all calculation algorithms and interactive UI behaviors:
+The project includes an automated test suite with 72 unit tests across calculations, external API mocks, Pydantic schemas, LangGraph workflow nodes, and UI helpers:
 
 ```bash
-# Run deterministic calculation and schema validation tests
-./venv/bin/python -c "
-import calculator, mock_apis
-print('FICO:', calculator.get_fico_score(mock_apis.fetch_experian_credit_report('4401')))
-print('Installment ($15k):', calculator.calculate_monthly_installment(15000))
-"
+# Run full unit test suite
+pytest
+
+# Run tests with code coverage report
+pytest --cov=loan_agent
+
+# Run specific test module
+pytest tests/test_calculator.py
 ```
 
 ---

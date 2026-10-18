@@ -1,14 +1,10 @@
 """
-state_and_schemas.py
-Defines the LangGraph LoanApplicationState (TypedDict) and the Pydantic Structured
-Output schemas for the two LLM Agents (Bank Statement Analyzer & Policy Underwriter).
+state.py
+Defines the LangGraph LoanApplicationState (TypedDict).
 """
 from typing import TypedDict, Optional, List, Dict, Any, Literal
-from pydantic import Field
 
-# ---------------------------------------------------------------------------
-# LANGGRAPH CENTRAL STATE (TypedDict)
-# ---------------------------------------------------------------------------
+
 class LoanApplicationState(TypedDict, total=False):
     # --- A. Web App Input Fields ---
     application_id: str

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loan-agent"
+version = "0.1.0"
+description = "Institutional Loan Underwriting & Approval Workbench"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Apex Financial Engineering Team" }
+]
+dependencies = [
+    "streamlit>=1.35.0",
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "pydantic>=2.0.0",
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers"
+pythonpath = ["."]
