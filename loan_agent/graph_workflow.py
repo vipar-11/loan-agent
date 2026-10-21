@@ -27,28 +27,16 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import RetryPolicy
 
-try:
-    from loan_agent.state import LoanApplicationState
-    from loan_agent.schema import (
-        BankStatementAnalysisOutput,
-        UnderwritingOutput,
-    )
-    from loan_agent.mock_apis import (
-        fetch_experian_credit_report,
-        fetch_plaid_bank_statement,
-        prefilter_underwriting_transactions,
-    )
-except ImportError:
-    from .state import LoanApplicationState
-    from .schema import (
-        BankStatementAnalysisOutput,
-        UnderwritingOutput,
-    )
-    from .mock_apis import (
-        fetch_experian_credit_report,
-        fetch_plaid_bank_statement,
-        prefilter_underwriting_transactions,
-    )
+from loan_agent.state import LoanApplicationState
+from loan_agent.schema import (
+    BankStatementAnalysisOutput,
+    UnderwritingOutput,
+)
+from loan_agent.mock_apis import (
+    fetch_experian_credit_report,
+    fetch_plaid_bank_statement,
+    prefilter_underwriting_transactions,
+)
 
 # Load .env file automatically if present
 load_dotenv()
@@ -58,8 +46,8 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 def load_policy_document() -> str:
     candidates = [
-        Path(__file__).parent / "policy_v1.md",
-        Path(__file__).resolve().parent.parent.parent / "policy_v1.md",
+        # Path(__file__).parent / "policy_v1.md",
+        # Path(__file__).resolve().parent.parent.parent / "policy_v1.md",
         Path.cwd() / "policy_v1.md",
     ]
     for p in candidates:
