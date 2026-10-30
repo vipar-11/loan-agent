@@ -188,6 +188,7 @@ def bank_statement_analyzer_agent(state: LoanApplicationState) -> Dict[str, Any]
         llm = get_llm()
         structured_llm = llm.with_structured_output(BankStatementAnalysisOutput)
 
+
         system_prompt = """You are a Senior Financial Data Analyst for an automated underwriting pipeline.
 Your job is to classify 90 days of pre-filtered bank transactions into strict underwriting categories
 and reconcile debt outflows against the applicant's known credit bureau tradelines.
@@ -224,9 +225,9 @@ Classify every single transaction in the list above and provide a concise analys
 
         # --- VARIANT 1: Standard Python Invocation (No LCEL Pipe) ---
         formatted_messages = prompt.format_messages(
-            applicant_name=state["applicant_name"],
-            tradelines_json=json.dumps(state["credit_report"]["tradelines"], indent=2),
-            transactions_json=json.dumps(state["prefiltered_transactions"], indent=2),
+            applicant_name=state.get("applicant_name", "Applicant"),
+            tradelines_json=json.dumps((state.get("credit_report") or {}).get("tradelines", []), indent=2),
+            transactions_json=json.dumps(state.get("prefiltered_transactions", []), indent=2),
         )
         result: BankStatementAnalysisOutput = structured_llm.invoke(formatted_messages)
 
@@ -426,6 +427,7 @@ def underwriter_agent_node(state: LoanApplicationState) -> Dict[str, Any]:
         llm = get_llm()
         structured_llm = llm.with_structured_output(UnderwritingOutput)
         policy_markdown = load_policy_document()
+
 
         # Notice: ZERO hardcoded rule IDs or numeric thresholds in this prompt!
         system_prompt = """You are the Lead Credit Underwriter AI Agent.

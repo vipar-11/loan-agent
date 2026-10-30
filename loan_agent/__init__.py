@@ -39,6 +39,24 @@ from loan_agent.graph_workflow import (
     build_underwriting_graph,
     load_policy_document,
 )
+from loan_agent.config import (
+    DatabaseConfig,
+    load_db_config,
+)
+from loan_agent.db import (
+    ApplicationDatabase,
+    get_application_database,
+)
+from loan_agent.checkpointer import (
+    get_langgraph_checkpointer,
+)
+from loan_agent.workflow_runner import (
+    run_initiate_workflow,
+)
+from loan_agent.admin import (
+    list_loans_action,
+    trace_loan_action,
+)
 
 __all__ = [
     "LoanApplicationState",
@@ -67,4 +85,13 @@ __all__ = [
     "prefilter_underwriting_transactions",
     "build_underwriting_graph",
     "load_policy_document",
+    "DatabaseConfig",
+    "load_db_config",
+    "ApplicationDatabase",
+    "get_application_database",
+    "get_langgraph_checkpointer",
+    "run_initiate_workflow",
+    "list_loans_action",
+    "trace_loan_action",
 ]
+

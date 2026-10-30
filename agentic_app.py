@@ -43,31 +43,28 @@ from loan_agent.calculator import (
 # Load environment variables (.env)
 load_dotenv()
 
+from loan_agent.db import get_application_database, ApplicationDatabase
+from loan_agent.checkpointer import get_langgraph_checkpointer
+from loan_agent.workflow_runner import run_initiate_workflow
+
 # ---------------------------------------------------------------------------
-# IN-MEMORY GLOBAL REPOSITORY & GRAPH CHECKPOINTER
+# PERSISTENT APPLICATION DATABASE & LANGGRAPH CHECKPOINTER
 # ---------------------------------------------------------------------------
 @st.cache_resource
-def get_global_loan_repository() -> Dict[str, Any]:
-    """
-    In-memory dictionary singleton:
-    1. Persists across browser tab refreshes while the server process is alive.
-    2. Completely clears to a clean slate whenever the app is restarted.
-    3. Requires zero disk files or temporary data folders.
-    """
-    return {}
+def get_app_database() -> ApplicationDatabase:
+    """Singleton connection to the persistent application database."""
+    return get_application_database()
 
 
 @st.cache_resource
-def get_graph_checkpointer() -> MemorySaver:
-    """
-    MemorySaver checkpointer singleton for LangGraph:
-    Maintains thread states for paused human-in-the-loop workflows across Streamlit reruns.
-    """
-    return MemorySaver()
+def get_graph_checkpointer():
+    """Singleton checkpointer for LangGraph persisting in distinct database."""
+    return get_langgraph_checkpointer()
 
 
 # ---------------------------------------------------------------------------
 # STREAMLIT PAGE CONFIGURATION
+
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Apex Financial — Autonomous Underwriting Desk",
@@ -282,12 +279,13 @@ inject_enterprise_light_css()
 
 
 # ---------------------------------------------------------------------------
-# IN-MEMORY STATE INITIALIZATION
+# PERSISTENT REPOSITORY STATE INITIALIZATION
 # ---------------------------------------------------------------------------
 def initialize_repository():
-    """Initializes in-memory storage for loan applications — persists across refreshes, resets on app restart."""
-    if "loan_applications" not in st.session_state:
-        st.session_state["loan_applications"] = get_global_loan_repository()
+    """Initializes loan applications from the persistent Application Database."""
+    db = get_app_database()
+    all_apps = db.list_applications()
+    st.session_state["loan_applications"] = {app["application_id"]: app for app in all_apps}
 
     if "current_view" not in st.session_state:
         st.session_state["current_view"] = "Applicant Portal"
@@ -300,6 +298,7 @@ def initialize_repository():
 
 
 initialize_repository()
+
 
 
 def generate_unique_app_id(existing_apps: Dict[str, Any]) -> str:
@@ -468,12 +467,14 @@ def auto_classify_transaction(tx: Dict[str, Any]) -> str:
 # NAVIGATION TOP BAR & WORKSPACE CONTROLS
 # ---------------------------------------------------------------------------
 apps_dict = st.session_state["loan_applications"]
+new_count = sum(1 for a in apps_dict.values() if a.get("status") in ["NEW", "new"])
 pending_count = sum(1 for a in apps_dict.values() if a.get("status") == "PENDING_REVIEW")
-adjudicated_count = len(apps_dict) - pending_count
+adjudicated_count = sum(1 for a in apps_dict.values() if a.get("status") not in ["PENDING_REVIEW", "NEW", "new", "PENDING_PROCESSING"])
 is_underwriter = (st.session_state.get("current_view") == "Underwriter Desk")
 
 if is_underwriter:
     badges_html = (
+        f'<span class="badge-pill badge-blue">🆕 {new_count} NEW</span> '
         f'<span class="badge-pill badge-amber">⏳ {pending_count} PENDING REVIEW</span> '
         f'<span class="badge-pill badge-green">🏁 {adjudicated_count} ADJUDICATED</span> '
         f'<span class="badge-pill badge-purple">🤖 LANGGRAPH WORKFLOW</span>'
@@ -481,9 +482,10 @@ if is_underwriter:
     sub_title = "Autonomous Underwriting & Adjudication Desk"
 else:
     badges_html = (
-        '<span class="badge-pill badge-blue">🔒 SECURE APPLICANT PORTAL</span> '
+        f'<span class="badge-pill badge-blue">🆕 {new_count} QUEUED</span> '
         '<span class="badge-pill badge-purple">⚡ AGENTIC PIPELINE ENABLED</span>'
     )
+
     sub_title = "Personal Loan Application Portal"
 
 st.html(
@@ -541,12 +543,13 @@ with st.sidebar:
             </div>"""
         )
 
-        if st.button("Reset In-Memory Queue", use_container_width=True):
-            get_global_loan_repository().clear()
-            st.session_state["loan_applications"] = get_global_loan_repository()
+        if st.button("Reset Application Database", use_container_width=True):
+            get_app_database().clear_all()
+            st.session_state["loan_applications"] = {}
             st.session_state["form_gen"] += 1
             st.session_state["active_review_app_id"] = None
             st.rerun()
+
     else:
         st.markdown("<hr style='border-color:#E2E8F0; margin:14px 0;'/>", unsafe_allow_html=True)
         st.html(
@@ -1026,9 +1029,18 @@ def render_adjudication_dialog(app_id: str):
                     "policy_citations": graph_state.get("policy_citations"),
                 }
 
+                db = get_app_database()
+                db.save_application(
+                    app,
+                    actor=officer_name.strip() or "James Thornton, Senior Underwriter",
+                    event_type="HUMAN_REVIEW_DECISION",
+                    details=f"Human determination recorded: {final_status}. Reason: {notes_clean}",
+                )
+
                 st.session_state[f"adjudication_error_{app_id}"] = None
                 st.session_state["active_review_app_id"] = None
                 st.rerun()
+
 
         if st.button("Cancel / Close", use_container_width=True, key=f"btn_cancel_{app_id}"):
             st.session_state[f"adjudication_error_{app_id}"] = None
@@ -1159,7 +1171,7 @@ if st.session_state["current_view"] == "Applicant Portal":
             new_app_id = generate_unique_app_id(st.session_state["loan_applications"])
             timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            initial_state: LoanApplicationState = {
+            new_app_record = {
                 "application_id": new_app_id,
                 "applicant_name": inp_name.strip(),
                 "ssn_last_4": inp_ssn.strip(),
@@ -1167,82 +1179,26 @@ if st.session_state["current_view"] == "Applicant Portal":
                 "loan_amount_requested": float(inp_amount),
                 "loan_purpose": inp_purpose,
                 "fcra_consent": bool(inp_consent),
-            }
-
-            # TRIGGER LANGGRAPH AGENTIC WORKFLOW EXECUTION
-            with st.spinner(f"🤖 Invoking AI Underwriting Agent Pipeline for {inp_name.strip()}..."):
-                try:
-                    checkpointer = get_graph_checkpointer()
-                    graph = build_underwriting_graph(checkpointer=checkpointer)
-                    config = {"configurable": {"thread_id": new_app_id}}
-                    graph_output = graph.invoke(initial_state, config=config)
-                except Exception as exc:
-                    graph_output = {
-                        **initial_state,
-                        "underwriting_decision": "ESCALATE",
-                        "confidence_score": 0.0,
-                        "policy_citations": ["SYSTEM_EXCEPTION_FALLBACK"],
-                        "adverse_action_reasons": [],
-                        "underwriter_memo": f"Pipeline initialization exception caught: {str(exc)}",
-                        "execution_log": [f"🚨 Exception: {str(exc)}"],
-                    }
-
-            decision = graph_output.get("underwriting_decision", "ESCALATE")
-
-            # AUTOMATIC ROUTING LOGIC:
-            # - APPROVE / DENY -> Move directly into Adjudicated Items Archive
-            # - ESCALATE -> Placed in Pending Review for Human Underwriter
-            if decision == "APPROVE":
-                final_status = "AUTO_APPROVED"
-                adjudication_info = {
-                    "decision": "AUTO_APPROVED",
-                    "officer": "AI Agent (Policy Underwriter)",
-                    "reason": graph_output.get("underwriter_memo", "Automated Approval"),
-                    "adjudicated_at": timestamp_str,
-                    "policy_citations": graph_output.get("policy_citations", []),
-                    "confidence_score": graph_output.get("confidence_score", 1.0),
-                }
-                sub_banner = {
-                    "msg": f"✅ Loan Application {new_app_id} for {inp_name.strip()} was AUTO-APPROVED by the AI Underwriting Agent and moved to the Adjudicated Archive.",
-                    "type": "success",
-                }
-            elif decision in ["DENY", "REJECT_NO_CONSENT"]:
-                final_status = "AUTO_DENIED" if decision == "DENY" else "REJECTED_NO_CONSENT"
-                adjudication_info = {
-                    "decision": final_status,
-                    "officer": "AI Agent (Policy Underwriter)",
-                    "reason": graph_output.get("underwriter_memo", "Automated Denial"),
-                    "adjudicated_at": timestamp_str,
-                    "policy_citations": graph_output.get("policy_citations", []),
-                    "adverse_action_reasons": graph_output.get("adverse_action_reasons", []),
-                    "confidence_score": graph_output.get("confidence_score", 1.0),
-                }
-                sub_banner = {
-                    "msg": f"❌ Loan Application {new_app_id} for {inp_name.strip()} was AUTO-DENIED by the AI Underwriting Agent and moved to the Adjudicated Archive.",
-                    "type": "error",
-                }
-            else:  # ESCALATE
-                final_status = "PENDING_REVIEW"
-                adjudication_info = None
-                sub_banner = {
-                    "msg": f"⚠️ Loan Application {new_app_id} for {inp_name.strip()} was ESCALATED by the AI Agent and placed in the Underwriter Pending Review queue.",
-                    "type": "warning",
-                }
-
-            # Store in-memory repository record
-            st.session_state["loan_applications"][new_app_id] = {
-                "application_id": new_app_id,
-                "applicant_name": inp_name.strip(),
-                "ssn_last_4": inp_ssn.strip(),
-                "stated_annual_income": float(inp_income),
-                "loan_amount_requested": float(inp_amount),
-                "loan_purpose": inp_purpose,
-                "fcra_consent": bool(inp_consent),
-                "status": final_status,
+                "status": "NEW",
                 "submitted_at": timestamp_str,
-                "graph_state": graph_output,
-                "adjudication": adjudication_info,
+                "graph_state": None,
+                "adjudication": None,
             }
+
+            db = get_app_database()
+            db.save_application(
+                new_app_record,
+                actor="APPLICANT",
+                event_type="APPLICATION_SUBMITTED",
+                details="Application submitted via Applicant Portal; queued for approval workflow initiation.",
+            )
+            st.session_state["loan_applications"][new_app_id] = new_app_record
+
+            sub_banner = {
+                "msg": f"✅ Loan Application {new_app_id} for {inp_name.strip()} was successfully recorded in the Application Database with status NEW. Launch the approval workflow on demand or via scheduled cron: python -m initiate_workflow",
+                "type": "success",
+            }
+
 
             st.session_state["form_gen"] += 1
             st.session_state["submission_result"] = sub_banner
@@ -1263,8 +1219,9 @@ else:
         </div>"""
     )
 
-    tab_pending_queue, tab_adjudicated_archive = st.tabs([
+    tab_pending_queue, tab_new_queue, tab_adjudicated_archive = st.tabs([
         f"📥 Pending Loan Review Queue ({pending_count})",
+        f"🆕 New Loan Submissions ({new_count})",
         f"🏁 Adjudicated / Completed Archive ({adjudicated_count})",
     ])
 
@@ -1316,10 +1273,56 @@ else:
                         st.rerun()
 
     # -----------------------------------------------------------------------
-    # SUB-TAB B: ADJUDICATED ARCHIVE (AUTO APPROVED, AUTO DENIED & HUMAN OVERRIDES)
+    # SUB-TAB B: NEW LOAN SUBMISSIONS (QUEUED FOR BATCH INITIATION)
+    # -----------------------------------------------------------------------
+    with tab_new_queue:
+        new_apps = [a for a in apps_dict.values() if a.get("status") in ["NEW", "new", "PENDING_PROCESSING"]]
+
+        if not new_apps:
+            st.html(
+                """<div style="background:#FFFFFF; border:1px dashed #CBD5E1; border-radius:6px; padding:36px; text-align:center; color:#64748B;">
+                    <div style="font-size:1.2rem; margin-bottom:4px;">✨</div>
+                    <div style="font-size:0.9rem; font-weight:600; color:#0F172A;">No New Loans Pending Workflow Initiation</div>
+                    <div style="font-size:0.75rem; margin-top:2px;">New submissions appear here until batch processing is initiated via <code>python -m initiate_workflow</code>.</div>
+                </div>"""
+            )
+        else:
+            col_info, col_act = st.columns([3.6, 1.4])
+            with col_info:
+                st.markdown(f"<div style='font-size:0.8rem; color:#475569;'>Found <strong>{len(new_apps)}</strong> new application(s) queued. Launch approval workflow via external cron / CLI (<code>python -m initiate_workflow</code>) or on-demand:</div>", unsafe_allow_html=True)
+            with col_act:
+                if st.button("⚡ Run Workflows Now", type="primary", use_container_width=True):
+                    with st.spinner("Executing underwriting workflow for new loans..."):
+                        run_initiate_workflow(config=load_db_config(), app_db=get_app_database(), checkpointer=get_graph_checkpointer())
+                        all_apps = get_app_database().list_applications()
+                        st.session_state["loan_applications"] = {a["application_id"]: a for a in all_apps}
+                        st.rerun()
+
+            for app in new_apps:
+                app_id = app["application_id"]
+                req_amt = format_currency(app["loan_amount_requested"])
+                income = format_currency(app["stated_annual_income"])
+                ssn_masked = f"••••-{app['ssn_last_4']}"
+                st.html(
+                    f"""<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <span style="font-size:0.9rem; font-weight:700; color:#0F172A;">{app['applicant_name']}</span>
+                            <span style="font-size:0.72rem; color:#2563EB; font-family:'JetBrains Mono'; margin-left:6px;">[{app_id}]</span>
+                            <span class="badge-pill badge-blue" style="margin-left:8px; font-size:0.65rem;">NEW / QUEUED</span>
+                            <div style="font-size:0.72rem; color:#64748B; margin-top:3px;">
+                                SSN: {ssn_masked} | Stated: {income}/yr | Purpose: {app['loan_purpose']} | Submitted: {app['submitted_at']}
+                            </div>
+                        </div>
+                        <span style="font-size:1.05rem; font-weight:700; color:#0F172A; font-family:'JetBrains Mono';">{req_amt}</span>
+                    </div>"""
+                )
+
+    # -----------------------------------------------------------------------
+    # SUB-TAB C: ADJUDICATED ARCHIVE (AUTO APPROVED, AUTO DENIED & HUMAN OVERRIDES)
     # -----------------------------------------------------------------------
     with tab_adjudicated_archive:
-        completed_apps = [a for a in apps_dict.values() if a.get("status") != "PENDING_REVIEW"]
+        completed_apps = [a for a in apps_dict.values() if a.get("status") not in ["PENDING_REVIEW", "NEW", "new", "PENDING_PROCESSING"]]
+
 
         if not completed_apps:
             st.html(
