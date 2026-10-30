@@ -82,8 +82,8 @@ app_db_path = local_app_test.db
 langgraph_db_path = local_lg_test.db
 
 [remote]
-app_db_url = postgresql://usr:pwd@remote-host:5432/app_db
-langgraph_db_url = postgresql://usr:pwd@remote-host:5432/lg_db
+app_db_url = postgresql://remote-host:5432/app_db
+langgraph_db_url = postgresql://remote-host:5432/lg_db
 """,
             encoding="utf-8",
         )

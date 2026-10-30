@@ -179,8 +179,8 @@ class TestApplicationDatabase:
             mode="remote",
             local_app_db_path=Path("dummy.db"),
             local_langgraph_db_path=Path("dummy_lg.db"),
-            remote_app_db_url="postgresql://usr:pwd@localhost:5432/app",
-            remote_langgraph_db_url="postgresql://usr:pwd@localhost:5432/lg",
+            remote_app_db_url="postgresql://localhost:5432/app",
+            remote_langgraph_db_url="postgresql://localhost:5432/lg",
         )
 
         # Patch psycopg

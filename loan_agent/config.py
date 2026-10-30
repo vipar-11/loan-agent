@@ -60,8 +60,8 @@ def load_db_config(config_path: Optional[str | Path] = None) -> DatabaseConfig:
     mode = "local"
     local_app_db = Path("data/loan_agent_app.db")
     local_lg_db = Path("data/loan_agent_checkpoints.db")
-    remote_app_url = "postgresql://postgres:postgres@localhost:5432/loan_app_db"
-    remote_lg_url = "postgresql://postgres:postgres@localhost:5432/loan_checkpoint_db"
+    remote_app_url = "postgresql://localhost:5432/loan_app_db"
+    remote_lg_url = "postgresql://localhost:5432/loan_checkpoint_db"
 
     if resolved_file and resolved_file.exists():
         parser.read(resolved_file, encoding="utf-8")
