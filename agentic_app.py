@@ -45,7 +45,6 @@ load_dotenv()
 
 from loan_agent.db import get_application_database, ApplicationDatabase
 from loan_agent.checkpointer import get_langgraph_checkpointer
-from loan_agent.workflow_runner import run_initiate_workflow
 
 # ---------------------------------------------------------------------------
 # PERSISTENT APPLICATION DATABASE & LANGGRAPH CHECKPOINTER
@@ -474,7 +473,6 @@ is_underwriter = (st.session_state.get("current_view") == "Underwriter Desk")
 
 if is_underwriter:
     badges_html = (
-        f'<span class="badge-pill badge-blue">🆕 {new_count} NEW</span> '
         f'<span class="badge-pill badge-amber">⏳ {pending_count} PENDING REVIEW</span> '
         f'<span class="badge-pill badge-green">🏁 {adjudicated_count} ADJUDICATED</span> '
         f'<span class="badge-pill badge-purple">🤖 LANGGRAPH WORKFLOW</span>'
@@ -1219,9 +1217,8 @@ else:
         </div>"""
     )
 
-    tab_pending_queue, tab_new_queue, tab_adjudicated_archive = st.tabs([
+    tab_pending_queue, tab_adjudicated_archive = st.tabs([
         f"📥 Pending Loan Review Queue ({pending_count})",
-        f"🆕 New Loan Submissions ({new_count})",
         f"🏁 Adjudicated / Completed Archive ({adjudicated_count})",
     ])
 
@@ -1273,52 +1270,7 @@ else:
                         st.rerun()
 
     # -----------------------------------------------------------------------
-    # SUB-TAB B: NEW LOAN SUBMISSIONS (QUEUED FOR BATCH INITIATION)
-    # -----------------------------------------------------------------------
-    with tab_new_queue:
-        new_apps = [a for a in apps_dict.values() if a.get("status") in ["NEW", "new", "PENDING_PROCESSING"]]
-
-        if not new_apps:
-            st.html(
-                """<div style="background:#FFFFFF; border:1px dashed #CBD5E1; border-radius:6px; padding:36px; text-align:center; color:#64748B;">
-                    <div style="font-size:1.2rem; margin-bottom:4px;">✨</div>
-                    <div style="font-size:0.9rem; font-weight:600; color:#0F172A;">No New Loans Pending Workflow Initiation</div>
-                    <div style="font-size:0.75rem; margin-top:2px;">New submissions appear here until batch processing is initiated via <code>python -m initiate_workflow</code>.</div>
-                </div>"""
-            )
-        else:
-            col_info, col_act = st.columns([3.6, 1.4])
-            with col_info:
-                st.markdown(f"<div style='font-size:0.8rem; color:#475569;'>Found <strong>{len(new_apps)}</strong> new application(s) queued. Launch approval workflow via external cron / CLI (<code>python -m initiate_workflow</code>) or on-demand:</div>", unsafe_allow_html=True)
-            with col_act:
-                if st.button("⚡ Run Workflows Now", type="primary", use_container_width=True):
-                    with st.spinner("Executing underwriting workflow for new loans..."):
-                        run_initiate_workflow(config=load_db_config(), app_db=get_app_database(), checkpointer=get_graph_checkpointer())
-                        all_apps = get_app_database().list_applications()
-                        st.session_state["loan_applications"] = {a["application_id"]: a for a in all_apps}
-                        st.rerun()
-
-            for app in new_apps:
-                app_id = app["application_id"]
-                req_amt = format_currency(app["loan_amount_requested"])
-                income = format_currency(app["stated_annual_income"])
-                ssn_masked = f"••••-{app['ssn_last_4']}"
-                st.html(
-                    f"""<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-                        <div>
-                            <span style="font-size:0.9rem; font-weight:700; color:#0F172A;">{app['applicant_name']}</span>
-                            <span style="font-size:0.72rem; color:#2563EB; font-family:'JetBrains Mono'; margin-left:6px;">[{app_id}]</span>
-                            <span class="badge-pill badge-blue" style="margin-left:8px; font-size:0.65rem;">NEW / QUEUED</span>
-                            <div style="font-size:0.72rem; color:#64748B; margin-top:3px;">
-                                SSN: {ssn_masked} | Stated: {income}/yr | Purpose: {app['loan_purpose']} | Submitted: {app['submitted_at']}
-                            </div>
-                        </div>
-                        <span style="font-size:1.05rem; font-weight:700; color:#0F172A; font-family:'JetBrains Mono';">{req_amt}</span>
-                    </div>"""
-                )
-
-    # -----------------------------------------------------------------------
-    # SUB-TAB C: ADJUDICATED ARCHIVE (AUTO APPROVED, AUTO DENIED & HUMAN OVERRIDES)
+    # SUB-TAB B: ADJUDICATED ARCHIVE (AUTO APPROVED, AUTO DENIED & HUMAN OVERRIDES)
     # -----------------------------------------------------------------------
     with tab_adjudicated_archive:
         completed_apps = [a for a in apps_dict.values() if a.get("status") not in ["PENDING_REVIEW", "NEW", "new", "PENDING_PROCESSING"]]
