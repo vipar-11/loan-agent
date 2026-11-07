@@ -52,10 +52,27 @@ from loan_agent.checkpointer import (
 )
 from loan_agent.workflow_runner import (
     run_initiate_workflow,
+    process_application,
+    resume_with_human_decision,
+)
+from loan_agent.classification import (
+    CREDIT_CLASSIFICATION_OPTIONS,
+    DEBIT_CLASSIFICATION_OPTIONS,
+    SCHEMA_CATEGORY_TO_UI_MAP,
+    map_category_to_ui,
+    map_ui_to_category,
+    auto_classify_transaction,
+    resolve_classifications,
 )
 from loan_agent.admin import (
     list_loans_action,
     trace_loan_action,
+)
+from loan_agent.api_cli import (
+    ApiClient,
+    main_list_loans,
+    main_trace_loan,
+    main_initiate_workflow,
 )
 
 __all__ = [
@@ -91,7 +108,20 @@ __all__ = [
     "get_application_database",
     "get_langgraph_checkpointer",
     "run_initiate_workflow",
+    "process_application",
+    "resume_with_human_decision",
+    "CREDIT_CLASSIFICATION_OPTIONS",
+    "DEBIT_CLASSIFICATION_OPTIONS",
+    "SCHEMA_CATEGORY_TO_UI_MAP",
+    "map_category_to_ui",
+    "map_ui_to_category",
+    "auto_classify_transaction",
+    "resolve_classifications",
     "list_loans_action",
     "trace_loan_action",
+    "ApiClient",
+    "main_list_loans",
+    "main_trace_loan",
+    "main_initiate_workflow",
 ]
 

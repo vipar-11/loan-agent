@@ -1,6 +1,6 @@
 # 🏦 Apex Financial — Institutional Loan Underwriting & Approval Workbench
 
-An enterprise-grade, FCRA & GLBA-compliant personal installment loan underwriting workbench and agentic decisioning platform. Built with **Streamlit**, **LangGraph**, and **Pydantic**, featuring deterministic financial ratio analysis, interactive bank cash flow classification, and human-in-the-loop credit adjudication.
+An enterprise-grade, FCRA & GLBA-compliant personal installment loan underwriting workbench and agentic decisioning platform. The **autonomous agentic service** is built with **FastAPI**, **LangGraph**, and **Pydantic** (JSON API + server-rendered workbench); the baseline **manual workbench** remains on **Streamlit**. Both feature deterministic financial ratio analysis, interactive bank cash flow classification, and human-in-the-loop credit adjudication.
 
 > 💡 **Audience Presentation Quick-Reference**: Explaining banking concepts or ratios to your audience? Jump straight to the [📖 Glossary of Terms & Financial Underwriting Primer](#-glossary-of-terms--financial-underwriting-primer).
 
@@ -11,9 +11,10 @@ An enterprise-grade, FCRA & GLBA-compliant personal installment loan underwritin
 Apex Financial delivers a modern, high-trust credit decisioning platform designed for unsecured personal installment loans ($1,000 – $50,000, fixed 36-month term at 12.0% APR).
 
 The system seamlessly combines:
-1. **Interactive Dual-Role Web Workbench**:
+1. **Interactive Dual-Role Web Workbench** (FastAPI service `api/` for the agentic flow; Streamlit `app.py` for the manual baseline):
    - **Loan Applicant Portal**: Real-time installment payment calculator, clean input state with contextual placeholders, regulatory consent capture, and 1-click demo persona autofill.
    - **Credit Underwriting Desk**: Modal-driven adjudication console, interactive bank cash flow categorizer with debit/credit-specific options, instant AI auto-classify shortcut, gated financial ratio worksheet, and a 1-click credit determination action panel with centered error validation.
+   - **Versioned JSON API (`/api/v1`)**: Every workbench action is an HTTP endpoint (OpenAPI docs at `/docs`), so new features, integrations, and alternative front-ends plug in without touching the UI.
 2. **Deterministic Financial Calculation Engine (`calculator.py`)**:
    - SR 11-7 compliant pure Python functions for post-loan Debt-to-Income (DTI), verified payroll income, undisclosed BNPL debt detection, 90-day NSF event tallying, and liquidity cushion ratios.
 3. **Multi-Agent LangGraph Pipeline (`graph_workflow.py`)**:
@@ -27,9 +28,21 @@ The system seamlessly combines:
 
 ```mermaid
 flowchart TD
-    subgraph UI["Streamlit Enterprise Workbench (app.py)"]
-        Portal["👤 Applicant Portal\n- Live Payment Sizer\n- FCRA/GLBA Consent\n- Persona Autofill"]
-        Desk["🛡️ Underwriter Review Desk\n- In-Memory Queue\n- Modal Dossier\n- Adjudication Memo"]
+    subgraph UI["FastAPI Agentic Service (api/) — Workbench Pages + JSON API"]
+        Portal["👤 Applicant Portal (/portal)\n- Live Payment Sizer\n- FCRA/GLBA Consent\n- Persona Autofill"]
+        Desk["🛡️ Underwriter Review Desk (/desk)\n- New / Pending / Archive Queues\n- Modal Dossier\n- HitL Adjudication"]
+        API["🔌 REST API (/api/v1)\n- routers → services → loan_agent\n- OpenAPI at /docs"]
+        Portal --> API
+        Desk --> API
+    end
+
+    subgraph Manual["Streamlit Manual Workbench (app.py) — non-agentic baseline"]
+        ManualDesk["🧮 Manual classification,\nratio worksheet & adjudication"]
+    end
+
+    subgraph Persist["Persistence (dbconfig.ini: SQLite or PostgreSQL)"]
+        AppDB["🗄️ Application DB (db.py)\n- loan_applications\n- loan_audit_trail"]
+        CkptDB["💾 LangGraph Checkpointer (checkpointer.py)\n- one thread per application\n- HitL breakpoint state"]
     end
 
     subgraph Data["Mock Data Services (mock_apis.py)"]
@@ -54,11 +67,14 @@ flowchart TD
         PolMD["📜 policy_v1.md\n- Hard Knockout Criteria\n- Auto-Approval Tier\n- Human Escalation Gates"]
     end
 
-    Portal -->|Submit Application| Desk
-    Desk -->|Fetch Credit & Bank Data| Data
-    Desk -->|Interactive Classification| Calc
-    Data --> Engine
-    Data --> Agentic
+    API -->|Persist & audit| AppDB
+    API -->|process_application / resume_with_human_decision| Agentic
+    Agentic --> CkptDB
+    Agentic -->|Parallel fetch| Data
+    Agentic -->|Node 4| Engine
+    API -->|Recalculate ratios| Engine
+    ManualDesk --> Data
+    ManualDesk --> Engine
     PolMD -->|Dynamic Policy Context| Agentic
 ```
 
@@ -72,34 +88,69 @@ loan-agent/
 ├── requirements.txt            # Production application dependencies
 ├── requirements-dev.txt        # Development and testing dependencies (pytest, pytest-cov)
 ├── policy_v1.md                # Apex Financial Credit Underwriting Policy (US-2026)
-├── app.py                      # Manual credit underwriting workbench
-├── agentic_app.py              # Autonomous LangGraph agentic underwriting workbench
+├── dbconfig.ini                # Storage mode (local SQLite / remote PostgreSQL) & database locations
+├── setup_env.sh                # Dev sandbox bootstrap: venv + activation + both requirements files
+├── run_api.py                  # Launches the FastAPI agentic service (uvicorn)
+├── initiate_workflow.py        # CLI/cron scheduler: runs the approval workflow via POST /api/v1/workflows/run
+├── list_loans.py               # Admin CLI: queries applications / status summary via GET /api/v1/applications & /stats
+├── trace_loan.py               # Admin CLI: consolidated audit trace via GET /api/v1/applications/{id} [+ /audit-trail]
+├── app.py                      # Manual (non-agentic) credit underwriting workbench — Streamlit
+├── agentic_app.py              # Agentic underwriting workbench — Streamlit (legacy; co-exists with api/ during migration)
 ├── .streamlit/
-│   └── config.toml             # Streamlit Enterprise light theme configuration
-├── loan_agent/                 # Core reusable Python package
+│   └── config.toml             # Streamlit theme for app.py / agentic_app.py
+├── api/                        # ⭐ Autonomous agentic underwriting service — FastAPI
+│   ├── main.py                 # App factory, lifespan (DB + checkpointer warm-up), router mounting
+│   ├── dependencies.py         # DI providers (application DB, LangGraph checkpointer, workflow lock)
+│   ├── schemas.py              # Pydantic request/response contracts (the public API surface)
+│   ├── routers/                # HTTP layer only — validation, status codes, serialization
+│   │   ├── applications.py     # /api/v1/applications: submit, list, detail, dossier, ratios, workflow, decision
+│   │   ├── workflows.py        # /api/v1/workflows/run (fire-and-forget), /workflows/runs/{id}, /api/v1/stats
+│   │   ├── admin.py            # /api/v1/admin: status summary, job health, run history, schedule config
+│   │   ├── reference.py        # /api/v1/health, /system, /personas, /calculator, /policy
+│   │   └── pages.py            # / , /portal, /desk (Jinja2 server-rendered workbench)
+│   ├── services/               # Orchestration layer — no HTTP, no UI
+│   │   ├── applications.py     # Submission, reference IDs, listing/stage filters, queue stats, projections
+│   │   ├── dossier.py          # Review dossier assembly + deterministic ratio recalculation
+│   │   ├── workflows.py        # Pipeline dispatch guards, batch runs, HitL decision resumption
+│   │   ├── scheduler.py        # initiate_workflow run log, health evaluation, persisted interval, periodic trigger
+│   │   └── policy.py           # policy_v1.md loader + Markdown → HTML
+│   ├── templates/              # base.html, portal.html, desk.html, admin.html
+│   └── static/                 # apex.css (enterprise light theme), api.js, portal.js, desk.js, admin.js
+├── loan_agent/                 # Core reusable domain package (UI-agnostic)
 │   ├── __init__.py             # Package exports & public API
 │   ├── calculator.py           # Pure Python SR 11-7 Financial Ratio Calculator
+│   ├── classification.py       # Transaction classification vocabulary, schema↔label maps, heuristic classifier
 │   ├── graph_workflow.py       # 6-Node LangGraph Agentic Underwriting Workflow
+│   ├── workflow_runner.py      # process_application / run_initiate_workflow / resume_with_human_decision
+│   ├── api_cli.py              # REST-backed admin CLI (used by list_loans / trace_loan / initiate_workflow)
+│   ├── db.py                   # Application DB: applications, audit trail, workflow run log, settings (SQLite / PostgreSQL)
+│   ├── checkpointer.py         # LangGraph checkpointer factory (distinct database)
+│   ├── config.py               # dbconfig.ini + environment variable resolution
+│   ├── admin.py                # Direct-database list/trace actions (used internally and by tests)
 │   ├── mock_apis.py            # Experian & Plaid REST API Mock Providers & Personas
 │   ├── schema.py               # Pydantic Structured Output Schemas (Agents 1 & 2)
 │   └── state.py                # LangGraph LoanApplicationState TypedDict
-└── tests/                      # Automated unit & integration test suite
+└── tests/                      # Automated unit, API & integration test suite
     ├── __init__.py
-    ├── conftest.py             # Shared pytest fixtures & mock payloads
+    ├── conftest.py             # Shared pytest fixtures, in-memory DBs & deterministic mock LLM
+    ├── test_api.py             # End-to-end FastAPI tests (submit → pipeline → HitL decision → archive)
     ├── test_calculator.py      # Unit tests for financial ratio algorithms
     ├── test_mock_apis.py       # Unit tests for bureau/bank APIs & pre-filtering
     ├── test_schema.py          # Unit tests for Pydantic schemas & state models
     ├── test_workflow.py        # Unit tests for LangGraph nodes, routing, fallback
-    └── test_app_helpers.py     # Unit tests for presentation layer & formatters
+    ├── test_workflow_runner.py # Unit tests for the workflow engine & scheduler CLI
+    ├── test_db.py / test_checkpointer.py / test_config.py / test_admin.py
+    ├── test_app_helpers.py     # Unit tests for the Streamlit manual workbench helpers (app.py)
+    └── test_integration_workflow.py  # Live LLM integration tests (opt-in)
 ```
 
 ---
 
 ## 🚀 Key Modules & Capabilities
 
-### 1. Enterprise Workbench (`app.py`)
+### 1. Manual Underwriting Workbench (`app.py`, Streamlit — non-agentic baseline)
 - **Light Enterprise Design System**: Styled with a crisp slate and blue palette (Stripe/Mercury style), featuring JetBrains Mono typography for financial metrics.
-- **In-Memory Global State (`@st.cache_resource`)**: Data persists across browser refreshes ($F5$ / $\text{Cmd}+R$) while clearing completely on application server restarts—zero persistent disk artifacts or database debris.
+- **In-Memory Global State (`@st.cache_resource`)**: Data persists across browser refreshes ($F5$ / $\text{Cmd}+R$) while clearing completely on application server restarts—zero persistent disk artifacts or database debris. *(The agentic FastAPI service, by contrast, persists to the Application Database — see below.)*
 - **Credit Tradelines Tab**: Clean audit view with `Tradeline ID` removed, showing creditor name, account type, monthly obligation, 12-month delinquency history, and standing.
 - **Bank Cash Flow Tab**: 
   - `Txn Id` removed from the audit display table.
@@ -116,18 +167,65 @@ loan-agent/
 
 ---
 
-### 2. Autonomous Agentic Workbench (`agentic_app.py`)
-- **Direct Pipeline Trigger**: Submitting an application automatically triggers the 6-node LangGraph pipeline.
+### 2. Autonomous Agentic Underwriting Service (`api/`, FastAPI)
+
+The agentic workflow is delivered as a **layered FastAPI service** so that new capabilities are added as endpoints and services rather than as UI re-run logic:
+
+```
+HTTP request ──▶ api/routers (contracts, status codes) ──▶ api/services (orchestration) ──▶ loan_agent (domain)
+                                                                                            ├── workflow_runner.py  (LangGraph execution & HitL resumption)
+                                                                                            ├── calculator.py       (deterministic SR 11-7 math)
+                                                                                            ├── classification.py   (transaction vocabulary & heuristics)
+                                                                                            └── db.py / checkpointer.py (persistence)
+```
+
+- **Stateless server, persistent records**: all state lives in the Application Database and the LangGraph checkpointer; the browser only holds transient officer edits (e.g. what-if re-classifications).
+- **Workbench pages** (`/portal`, `/desk`) are thin Jinja2 templates + vanilla JS that consume the same JSON API (no build toolchain). A SPA or mobile client can be swapped in without server changes.
+- **Workflow dispatch is institution-controlled** — applicants only record a `NEW` file; they can never launch underwriting:
+  - *Built-in schedule*: the service itself initiates the workflow for NEW files every *N* minutes (default **2**), configurable on the Administrator screen (`PUT /api/v1/admin/scheduler/config`). Disable with `WORKFLOW_SCHEDULER_ENABLED=0` (or the screen toggle) when an external cron owns the cadence.
+  - *External / manual*: `python -m initiate_workflow` (cron) is a thin REST client that calls `POST /api/v1/workflows/run` and returns immediately (**fire-and-forget**); the service logs the run and executes it in the background.
+  - *Per file (integrations)*: `POST /api/v1/applications/{id}/workflow` (`?sync=true` to wait). All paths share the same `process_application()` engine and status transitions (`NEW → PENDING_PROCESSING → …`).
+- **Administrator screen (`/admin`)**: (a) application counts by the five main statuses — *new, pending processing, pending review, approved, rejected* — with sub-status detail; (b) a monitor showing whether the initiate-workflow job is running on schedule (`HEALTHY` / `OVERDUE` / `RUNNING` / `NEVER_RUN`, last run, next due, run history with per-run counts); (c) configuration of the interval between runs.
+- **REST-first administration**: `list_loans`, `trace_loan`, and `initiate_workflow` invoke the service's endpoints rather than executing database/workflow code in-process. `list_loans --count` prints counts for the five main statuses with sub-statuses (e.g. `AUTO_DENIED` / `HUMAN_DENIED` under *Rejected*) indented beneath.
+- **Retention-safe by construction**: the service exposes no endpoint, and the domain package no method, that deletes application or audit-trail records.
 - **Intelligent Dual-Queue Routing**:
-  - **`AUTO_APPROVED` & `AUTO_DENIED`**: Immediately bypass the pending queue and settle into the **Adjudicated / Completed Archive** with permanent audit logging.
-  - **`ESCALATE` Only**: Halts at the LangGraph breakpoint before `human_review_node` and appears in the **Pending Loan Review Queue** for credit committee adjudication.
-- **Auto-Populated Modal Dossier**:
-  - **Bank Cash Flow Tab**: Classifications are auto-populated directly from graph state (`categorized_transactions` produced by the LLM Bank Statement Analyzer).
-  - **Financial Ratios Tab**: Ratios are pre-calculated and auto-populated from graph state with on-demand `🔄 Recalculate Ratios` support.
-  - **AI Agent Assessment Tab**: Provides full visibility into the AI's recommendation, confidence score, underwriter memo, policy citations, bank analyst narrative, and complete step-by-step execution log.
-- **Human Override & LangGraph Resumption**:
-  - Credit officers review the AI memo and enter their mandatory justification notes.
-  - Clicking **`✅ Approve`** or **`❌ Reject`** updates the graph state (`human_reviewer_decision`, `human_reviewer_notes`) and resumes execution via `graph.invoke(None)`, finalizing as `HUMAN_APPROVED` or `HUMAN_DENIED`.
+  - **`AUTO_APPROVED` & `AUTO_DENIED`** settle immediately into the **Adjudicated / Completed Archive** with permanent audit logging.
+  - **`ESCALATE`** halts at the LangGraph breakpoint before `human_review_node` and appears in the **Pending Loan Review Queue**.
+- **Auto-Populated Review Dossier** (`GET /api/v1/applications/{id}/dossier`):
+  - **AI Assessment**: recommendation, confidence score, underwriter memo, policy citations, bank analyst narrative, full execution trace.
+  - **Credit Tradelines**: FICO, bureau debt, public records, tradeline audit table.
+  - **Bank Cash Flow**: classifications auto-populated from graph state (`categorized_transactions`) with per-transaction AI reasoning; credit/debit-specific dropdown options; *Reset to Heuristic* served by `loan_agent.classification` (single source of truth).
+  - **Financial Ratios**: pre-calculated from graph state; `POST …/ratios/recalculate` re-runs the deterministic calculator with the officer's classifications **without mutating** the persisted graph state.
+- **Human Override & LangGraph Resumption**: `POST /api/v1/applications/{id}/decision` validates the mandatory justification memo, injects `human_reviewer_decision` / `human_reviewer_notes` via `graph.update_state()`, resumes with `graph.invoke(None)`, and finalizes as `HUMAN_APPROVED` or `HUMAN_DENIED`. State-machine guards return `409 Conflict` for files not awaiting review.
+- **Concurrency safety**: pipeline executions and HitL resumptions are serialized behind a process-level lock, and the shared database connection is guarded, because FastAPI runs sync handlers in a threadpool.
+
+#### API Reference (`/docs` for interactive OpenAPI)
+
+| Method | Endpoint | Purpose |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/health` | Liveness probe |
+| `GET` | `/api/v1/system` | Engine/model/storage configuration + queue stats |
+| `GET` | `/api/v1/stats` | Queue counts by stage plus a `by_status` breakdown |
+| `GET` | `/` → `/portal`, `/desk`, `/admin` | Server-rendered Applicant Portal, Underwriter Desk & Administrator console (HTML) |
+| `GET` | `/docs`, `/redoc`, `/openapi.json` | Interactive API reference |
+| `GET` | `/api/v1/personas` | Demo borrower personas for autofill |
+| `GET` | `/api/v1/calculator/installment?loan_amount=` | Fixed-rate monthly installment quote |
+| `GET` | `/api/v1/policy` | `policy_v1.md` as Markdown + rendered HTML |
+| `POST` | `/api/v1/applications` | Submit application (recorded as `NEW`; never triggers underwriting) |
+| `GET` | `/api/v1/applications?status=` | List (`new`, `processing`, `pending_review`, `adjudicated`, `approved`, `rejected`, `all`) |
+| `GET` | `/api/v1/applications/{id}` | Full record incl. graph state & adjudication |
+| `GET` | `/api/v1/applications/{id}/audit-trail` | Regulatory audit events |
+| `GET` | `/api/v1/applications/{id}/dossier` | Underwriter review dossier |
+| `GET` | `/api/v1/applications/{id}/classifications/heuristic` | Rule-based classification map |
+| `POST` | `/api/v1/applications/{id}/ratios/recalculate` | What-if deterministic ratio recalculation |
+| `POST` | `/api/v1/applications/{id}/workflow?sync=&force=` | Dispatch the pipeline for one file |
+| `POST` | `/api/v1/applications/{id}/decision` | Human credit officer determination (HitL resume) |
+| `POST` | `/api/v1/workflows/run?sync=&trigger=` | Initiate the workflow for all NEW files — fire-and-forget by default (`limit`, `dry_run`) |
+| `GET` | `/api/v1/workflows/runs/{run_id}` | Outcome of a logged run |
+| `GET` | `/api/v1/admin/status-summary` | Counts by the five main statuses (+ sub-statuses) |
+| `GET` | `/api/v1/admin/scheduler` | Job health: is initiate-workflow running periodically? |
+| `GET` / `PUT` | `/api/v1/admin/scheduler/config` | Interval between runs (minutes) and built-in scheduler toggle |
+| `GET` | `/api/v1/admin/workflow-runs?limit=` | Run history |
 
 ---
 
@@ -200,20 +298,19 @@ The system includes 3 pre-configured demo borrower profiles accessible via the *
 - Python 3.10, 3.11, 3.12, or 3.13
 - Virtual environment (`venv` or `conda`)
 
-### 1. Clone & Set Up Virtual Environment
+### 1. One-Step Sandbox Setup (recommended)
 ```bash
 cd /Users/vipar/Data/projects/loan-agent
+source ./setup_env.sh      # creates ./venv, activates it, installs requirements.txt + requirements-dev.txt
+```
+Options: `VENV_DIR=.venv source ./setup_env.sh` (custom location), `PYTHON=python3.12 source ./setup_env.sh` (specific interpreter). The script is idempotent — re-run it to pick up dependency changes.
+
+### 2. Manual Setup (equivalent)
+```bash
 python3 -m venv venv
 source venv/bin/activate
-```
-
-### 2. Install Dependencies
-```bash
-# Core application dependencies
-pip install -r requirements.txt
-
-# Development and test dependencies (pytest, pytest-cov)
-pip install -r requirements-dev.txt
+pip install -r requirements.txt        # Core application dependencies
+pip install -r requirements-dev.txt    # Development and test dependencies (pytest, pytest-cov)
 ```
 
 ### 3. Configure Environment Variables
@@ -232,24 +329,46 @@ GROQ_API_KEY=gsk_your_groq_api_key_here
 
 ## 🖥️ Running the Applications
 
-Apex Financial provides two side-by-side implementations to demonstrate the evolution from manual credit underwriting to autonomous agentic decisioning:
+Apex Financial provides three side-by-side entry points. The FastAPI service and the Streamlit agentic workbench share the same Application Database and LangGraph checkpointer, so they can **co-exist during migration** — a file submitted in one is visible and adjudicable in the other.
 
-### Option 1: Autonomous Agentic Workbench (`agentic_app.py`)
+### Option 1: Autonomous Agentic Underwriting Service (FastAPI, `api/`)
 
-In this mode, the loan submission triggers the 6-node LangGraph pipeline. Automated decisions (`AUTO_APPROVED` / `AUTO_DENIED`) settle immediately into the archive, while complex files (`ESCALATE`) halt at the Human-in-the-Loop breakpoint and populate the Underwriter Review Queue with pre-populated AI assessments.
+In this mode, the service exposes the Applicant Portal, the Underwriter Desk, and the versioned JSON API. Submissions are recorded as `NEW`; the agentic underwriting workflow is launched by the institution via `python -m initiate_workflow` (or the `/api/v1/workflows/run` endpoint directly). Automated decisions (`AUTO_APPROVED` / `AUTO_DENIED`) settle immediately into the archive, while complex files (`ESCALATE`) halt at the Human-in-the-Loop breakpoint and populate the Underwriter Review Queue with pre-populated AI assessments.
 
 ```bash
-streamlit run agentic_app.py
+python run_api.py --reload            # or: uvicorn api.main:app --reload
 ```
-Open your browser at `http://localhost:8501`.
+Open your browser at `http://localhost:8000/portal` (Applicant Portal), `http://localhost:8000/desk` (Underwriter Desk), `http://localhost:8000/admin` (Administrator), or `http://localhost:8000/docs` (OpenAPI).
+
+Storage locations are governed by `dbconfig.ini` (local SQLite under `data/` by default, or remote PostgreSQL) and can be overridden with `APP_STORAGE_MODE`, `APP_DB_PATH`, `LANGGRAPH_DB_PATH`, `APP_DB_URL`, `LANGGRAPH_DB_URL`.
+
+Headless / scripted usage:
+```bash
+# Submit (recorded as NEW)
+curl -X POST localhost:8000/api/v1/applications -H 'Content-Type: application/json' \
+  -d '{"applicant_name":"David Chen","ssn_last_4":"9941","stated_annual_income":110000,"loan_amount_requested":35000,"loan_purpose":"Medical Expenses","fcra_consent":true}'
+
+# Run the approval workflow for all NEW files (same as: python -m initiate_workflow)
+curl -X POST localhost:8000/api/v1/workflows/run -H 'Content-Type: application/json' -d '{}'
+
+# Admin CLI (REST clients; target a remote instance with --api-url or LOAN_AGENT_API_URL)
+python -m list_loans --count          # counts by main status (new / pending processing / pending review / approved / rejected)
+python -m list_loans --status "pending review"
+python -m trace_loan --app_id app-2026-001
+python -m initiate_workflow           # fire-and-forget; progress on /admin or list_loans --count
+
+# Adjudicate an escalated file
+curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H 'Content-Type: application/json' \
+  -d '{"decision":"APPROVE","officer":"James Thornton, Senior Underwriter","notes":"Verified W-2; bonus structure explains variance."}'
+```
 
 #### Recommended Agentic Walkthrough:
-1. Navigate to the **Applicant Portal**.
-2. Click **`⚡ Autofill Demo Persona`**:
+1. Navigate to the **Applicant Portal** (`/portal`).
+2. Click **`⚡ Autofill Demo Persona`** and submit. The built-in schedule initiates the approval workflow within the configured interval (default 2 minutes) — or trigger it now with `python -m initiate_workflow`:
    - **Sarah Jenkins (Prime)**: Click Submit → AI Underwriter approves automatically per Tier 1 rules → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_APPROVED`.
    - **Marcus Vance (Subprime)**: Click Submit → AI Underwriter detects knockout criteria (FICO < 620, DTI > 45%, 4 NSF fees) → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_DENIED` and ECOA adverse action notices.
    - **David Chen (Nuanced / High-Value)**: Click Submit → loan amount ($35,000) and income variance (>15%) trigger Section 4 escalation → graph pauses execution before `human_review_node` → appears in the **Pending Loan Review Queue**.
-3. Switch to the **Underwriter Desk** via the sidebar navigation.
+3. Switch to the **Underwriter Desk** (`/desk`) via the sidebar navigation.
 4. Click **Review & Adjudicate ↗** on David Chen's escalated file:
    - **`🤖 AI Assessment` Tab**: Review the AI recommendation (`ESCALATE`), confidence score, detailed underwriter memorandum, policy citations, bank analyst narrative, and complete LangGraph execution trace.
    - **`💳 Bank Cash Flow` Tab**: Observe how all transactions are **auto-populated and pre-classified** by the AI Bank Statement Analyst agent.
@@ -258,14 +377,23 @@ Open your browser at `http://localhost:8501`.
    - Review the AI Agent Escalation briefing callout.
    - Enter your justification notes into **Credit Officer Justification** (e.g., *"Verified W-2 documentation confirms valid bonus structure; approved 41.8% DTI within near-prime tier"*).
    - Click **`✅ Approve`** (or **`❌ Reject`**).
-   - The system updates graph state and resumes execution, finalizing the loan as `HUMAN_APPROVED`.
-6. Navigate to the **Adjudicated / Completed Archive** to inspect the full audit trail and officer notes.
+   - The system updates graph state and resumes execution, finalizing the loan as `HUMAN_APPROVED` (or `HUMAN_DENIED`).
+6. Navigate to the **Adjudicated / Completed Archive** to inspect the full audit trail, execution trace, and officer notes.
 
 ---
 
-### Option 2: Manual Underwriting Workbench (`app.py`)
+### Option 2: Agentic Workbench — Streamlit (`agentic_app.py`, legacy during migration)
 
-In this baseline mode, the credit officer performs the entire manual workflow from scratch (manual bank ledger classification, manual ratio calculation, and manual adjudication).
+The original Streamlit implementation of the agentic workflow. It is retained so existing users can keep working while they migrate to the FastAPI service; both read and write the same databases.
+
+```bash
+streamlit run agentic_app.py
+```
+Open your browser at `http://localhost:8501`. The walkthrough above applies unchanged.
+
+### Option 3: Manual Underwriting Workbench (`app.py`, Streamlit)
+
+In this baseline (non-agentic) mode, the credit officer performs the entire manual workflow from scratch (manual bank ledger classification, manual ratio calculation, and manual adjudication). It intentionally remains a standalone Streamlit app.
 
 ```bash
 streamlit run app.py
@@ -290,8 +418,11 @@ streamlit run app.py
 The project includes both fast deterministic unit tests and live multi-agent LangGraph integration tests:
 
 ```bash
-# 1. Run fast unit test suite (72 unit tests, zero API cost)
+# 1. Run fast unit + API test suite (zero API cost; in-memory databases & deterministic mock LLM)
 pytest -m "not integration"
+
+# 1b. Only the FastAPI end-to-end tests (submit → pipeline → dossier → HitL decision → archive)
+pytest tests/test_api.py
 
 # 2. Run unit tests with code coverage report
 pytest --cov
@@ -337,7 +468,7 @@ pytest tests/test_integration_workflow.py
 * **Why it matters here**: Restricts the unauthorized sharing, persistent storage, and exposure of sensitive identifying data (e.g., Social Security Numbers, bank account masks, transaction logs).
 * **Implementation in Code**:
   - Only the **last 4 digits of the SSN** (`ssn_last_4`) are ever collected or transmitted.
-  - The system utilizes **in-memory session state** (`@st.cache_resource`) that completely wipes on server restart—zero unencrypted consumer files or database debris are left on disk.
+  - The API never returns the raw `ssn_last_4` in queue/archive projections (only the masked `••••-NNNN` form); the manual Streamlit workbench keeps everything in in-memory session state that wipes on restart.
 
 #### C. ECOA (Equal Credit Opportunity Act — Regulation B, 12 C.F.R. Part 1002)
 * **What it is**: Federal civil rights law prohibiting creditors from discriminating against credit applicants based on race, color, religion, national origin, sex, marital status, or age.

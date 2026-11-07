@@ -1,12 +1,14 @@
 """
 trace_loan.py
-Admin tool to trace consolidated history of a loan application across
-the Application Database and LangGraph checkpointer.
+Admin tool to trace the consolidated history of a loan application, via the underwriting
+service REST API (GET /api/v1/applications/{id} and /api/v1/applications/{id}/audit-trail).
+Requires the service to be running (`python run_api.py`); target it with --api-url or LOAN_AGENT_API_URL.
+
 Executable via:
   python -m trace_loan --app_id app-2026-001 (case-insensitive)
 """
 import sys
-from loan_agent.admin import main_trace_loan
+from loan_agent.api_cli import main_trace_loan
 
 if __name__ == "__main__":
     sys.exit(main_trace_loan())

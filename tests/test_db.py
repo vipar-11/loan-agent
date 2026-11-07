@@ -157,8 +157,7 @@ class TestApplicationDatabase:
             "status": "NEW",
         })
         assert db.get_application("APP-FILE-01") is not None
-        db.clear_all()
-        assert db.count_applications() == 0
+        assert db.count_applications() == 1
         db.close()
 
     def test_get_application_database_factory(self):

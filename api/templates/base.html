@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Apex Financial — Autonomous Underwriting Desk{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏦</text></svg>" />
+  <link rel="stylesheet" href="/static/css/apex.css" />
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="section-label">Navigation</div>
+    <nav class="nav-list">
+      <a class="nav-link {% if active_view == 'portal' %}active{% endif %}" href="/portal">👤 Applicant Portal</a>
+      <a class="nav-link {% if active_view == 'desk' %}active{% endif %}" href="/desk">🛡️ Underwriter Desk</a>
+      <a class="nav-link {% if active_view == 'admin' %}active{% endif %}" href="/admin">🛠️ Administrator</a>
+    </nav>
+    <hr />
+    {% block sidebar %}{% endblock %}
+  </aside>
+
+  <main class="main">
+    <header class="fin-header">
+      <div class="fin-brand-title">
+        🏦 Apex Financial
+        <span class="fin-brand-sep">|</span>
+        <span class="fin-brand-sub">{% block subtitle %}{% endblock %}</span>
+      </div>
+      <div class="header-badges" id="header-badges">{% block header_badges %}{% endblock %}</div>
+    </header>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="/static/js/api.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

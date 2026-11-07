@@ -80,7 +80,7 @@ def get_llm(
     if not resolved_api_key:
         raise ValueError(
             "API key is missing. Set GROQ_API_KEY, OPENAI_API_KEY, or LLM_API_KEY "
-            "in your environment or the Streamlit sidebar."
+            "in your environment (e.g. a .env file)."
         )
 
     return ChatOpenAI(
@@ -565,6 +565,14 @@ def route_after_underwriter(
 # ---------------------------------------------------------------------------
 # NODE 6A & 6B: HUMAN-IN-THE-LOOP ESCALATION & FINALIZATION
 # ---------------------------------------------------------------------------
+HUMAN_FINAL_STATUS: Dict[str, str] = {"APPROVE": "HUMAN_APPROVED", "DENY": "HUMAN_DENIED"}
+
+
+def human_final_status(decision: str | None) -> str:
+    """Maps a human reviewer decision (APPROVE / DENY) onto the canonical final status."""
+    return HUMAN_FINAL_STATUS.get(str(decision or "DENY").upper(), "HUMAN_DENIED")
+
+
 def human_review_node(state: LoanApplicationState) -> Dict[str, Any]:
     """
     Executes AFTER the graph is resumed by the Human Underwriter in the UI.
@@ -577,7 +585,7 @@ def human_review_node(state: LoanApplicationState) -> Dict[str, Any]:
         f"👤 [Node 6A: Human Underwriter Override] Final Decision={human_decision} | Notes: {human_notes}"
     )
     return {
-        "final_status": f"HUMAN_{human_decision}D",
+        "final_status": human_final_status(human_decision),
         "execution_log": logs,
     }
 

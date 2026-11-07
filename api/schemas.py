@@ -1,0 +1,382 @@
+"""
+Pydantic request / response contracts for the Autonomous Underwriting API.
+
+These models are the public surface of the service. Internal dict records produced by
+`loan_agent.db.ApplicationDatabase` are projected onto them in `api.services.applications`.
+"""
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+LoanPurpose = Literal[
+    "Home Improvement",
+    "Debt Consolidation",
+    "Medical Expenses",
+    "Major Purchase",
+    "Business",
+    "Other",
+]
+LOAN_PURPOSES: List[str] = list(LoanPurpose.__args__)  # type: ignore[attr-defined]
+
+HumanDecision = Literal["APPROVE", "DENY"]
+
+LOAN_AMOUNT_MIN = 1000.0
+LOAN_AMOUNT_MAX = 50000.0
+ANNUAL_RATE = 0.12
+TERM_MONTHS = 36
+
+
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
+class ApplicationCreate(BaseModel):
+    """Applicant Portal submission payload."""
+
+    applicant_name: str = Field(..., min_length=1, max_length=120, examples=["Sarah Jenkins"])
+    ssn_last_4: str = Field(..., pattern=r"^\d{4}$", examples=["4401"])
+    stated_annual_income: float = Field(..., gt=0, examples=[96000.0])
+    loan_amount_requested: float = Field(..., ge=LOAN_AMOUNT_MIN, le=LOAN_AMOUNT_MAX, examples=[15000.0])
+    loan_purpose: LoanPurpose = Field(..., examples=["Home Improvement"])
+    fcra_consent: bool = Field(
+        True,
+        description="Explicit FCRA/GLBA authorization for credit bureau inquiry and bank cash-flow review.",
+    )
+
+    @field_validator("applicant_name")
+    @classmethod
+    def _strip_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Borrower legal name is required.")
+        return v
+
+
+class Adjudication(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    decision: Optional[str] = None
+    officer: Optional[str] = None
+    reason: Optional[str] = None
+    adjudicated_at: Optional[str] = None
+    policy_citations: Optional[List[str]] = None
+    adverse_action_reasons: Optional[List[str]] = None
+    confidence_score: Optional[float] = None
+    agent_notes: Optional[str] = None
+
+
+class ApplicationSummary(BaseModel):
+    """Queue / archive listing projection (no raw graph state)."""
+
+    application_id: str
+    applicant_name: str
+    ssn_masked: str = Field(..., examples=["••••-4401"])
+    stated_annual_income: float
+    loan_amount_requested: float
+    loan_purpose: str
+    fcra_consent: bool
+    status: str
+    stage: Literal["NEW", "PROCESSING", "PENDING_REVIEW", "ADJUDICATED"]
+    submitted_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    estimated_monthly_payment: Optional[float] = None
+    post_loan_dti: Optional[float] = None
+    underwriting_decision: Optional[str] = None
+    adjudicator_type: Optional[Literal["AI_AGENT", "HUMAN_OFFICER"]] = None
+    adjudication: Optional[Adjudication] = None
+
+
+class ApplicationDetail(ApplicationSummary):
+    graph_state: Optional[Dict[str, Any]] = None
+
+
+class ApplicationCreateResponse(BaseModel):
+    application: ApplicationDetail
+    message: str
+
+
+class AuditEvent(BaseModel):
+    id: int
+    application_id: str
+    timestamp: str
+    event_type: str
+    actor: str
+    from_status: Optional[str] = None
+    to_status: Optional[str] = None
+    details: Optional[Any] = None
+
+
+class StatusGroup(BaseModel):
+    """One of the five administrator-facing main statuses with its sub-status breakdown."""
+
+    status: str = Field(..., examples=["rejected"])
+    label: str = Field(..., examples=["Rejected"])
+    count: int
+    sub_statuses: Dict[str, int] = Field(default_factory=dict, examples=[{"AUTO_DENIED": 2, "HUMAN_DENIED": 1}])
+
+
+class QueueStats(BaseModel):
+    new: int
+    processing: int
+    pending_review: int
+    adjudicated: int
+    total: int
+    by_status: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Exact record counts grouped by persisted status (e.g. NEW, PENDING_REVIEW, AUTO_APPROVED).",
+    )
+    main_statuses: List[StatusGroup] = Field(
+        default_factory=list,
+        description="Counts rolled up into the five main statuses: new, pending processing, pending review, approved, rejected.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workflow execution & human-in-the-loop
+# ---------------------------------------------------------------------------
+class WorkflowItem(BaseModel):
+    application_id: str
+    applicant_name: str
+    status: str
+    decision: Optional[str] = None
+    error: Optional[str] = None
+
+
+class WorkflowRunRequest(BaseModel):
+    limit: Optional[int] = Field(None, ge=1, description="Maximum number of NEW applications to process.")
+    dry_run: bool = Field(False, description="Preview eligible applications without executing the pipeline.")
+
+
+class WorkflowRunSummary(BaseModel):
+    found: int
+    selected: int
+    dry_run: bool
+    approved: int
+    rejected: int
+    escalated: int
+    errors: int
+    items: List[WorkflowItem]
+
+
+class WorkflowRun(BaseModel):
+    """A logged execution of the initiate_workflow job."""
+
+    id: int
+    trigger_source: str = Field(..., examples=["SCHEDULER", "CLI", "API"])
+    status: str = Field(..., examples=["REQUESTED", "RUNNING", "COMPLETED", "FAILED"])
+    requested_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    found: int = 0
+    selected: int = 0
+    approved: int = 0
+    rejected: int = 0
+    escalated: int = 0
+    errors: int = 0
+    error_message: Optional[str] = None
+
+
+class WorkflowRunAccepted(BaseModel):
+    """Fire-and-forget acknowledgement for a requested initiate_workflow run."""
+
+    run_id: int
+    status: str
+    found: int = Field(..., description="Number of NEW applications at the time the run was requested.")
+    message: str
+
+
+class ScheduleConfig(BaseModel):
+    interval_minutes: int = Field(..., ge=1, le=1440, description="Expected gap between two initiate_workflow runs.")
+    scheduler_enabled: bool = Field(..., description="Whether the service itself fires the job on that cadence.")
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class ScheduleConfigUpdate(BaseModel):
+    interval_minutes: Optional[int] = Field(None, ge=1, le=1440)
+    scheduler_enabled: Optional[bool] = None
+    updated_by: str = Field("Administrator", max_length=120)
+
+
+class SchedulerStatus(BaseModel):
+    config: ScheduleConfig
+    health: Literal["NEVER_RUN", "RUNNING", "HEALTHY", "OVERDUE"]
+    message: str
+    last_run: Optional[WorkflowRun] = None
+    seconds_since_last_run: Optional[int] = None
+    next_due_at: Optional[str] = None
+
+
+class WorkflowScheduledResponse(BaseModel):
+    application_id: str
+    status: str
+    scheduled: bool
+    message: str
+
+
+class HumanDecisionRequest(BaseModel):
+    decision: HumanDecision
+    officer: str = Field("James Thornton, Senior Underwriter", max_length=120)
+    notes: str = Field(..., description="Mandatory credit officer justification memorandum.")
+
+    @field_validator("notes")
+    @classmethod
+    def _notes_required(cls, v: str) -> str:
+        if not (v or "").strip():
+            raise ValueError("Mandatory: enter the underwriter justification memorandum before adjudicating.")
+        return v.strip()
+
+
+# ---------------------------------------------------------------------------
+# Review dossier (Underwriter Desk modal)
+# ---------------------------------------------------------------------------
+class FinancialRatios(BaseModel):
+    fico_score: int = 0
+    has_active_bankruptcy: bool = False
+    total_delinquencies_12m: int = 0
+    nsf_count_90d: int = 0
+    bureau_monthly_debt: float = 0.0
+    undisclosed_monthly_debt: float = 0.0
+    estimated_new_loan_payment: float = 0.0
+    total_post_loan_debt: float = 0.0
+    verified_monthly_income: float = 0.0
+    stated_monthly_income: float = 0.0
+    income_variance_pct: float = 0.0
+    post_loan_dti: float = 0.0
+    avg_ending_balance: float = 0.0
+    payment_cushion_ratio: float = 0.0
+
+
+class RatioRow(BaseModel):
+    metric: str
+    value: str
+    benchmark: str
+
+
+class RatiosResponse(BaseModel):
+    ratios: FinancialRatios
+    rows: List[RatioRow]
+    source: Literal["GRAPH_STATE", "RECALCULATED"]
+
+
+class RatioRecalculateRequest(BaseModel):
+    classifications: Dict[str, str] = Field(
+        ...,
+        description="Map of tx_id -> human-readable classification label (see dossier.bank.transactions[].options).",
+    )
+
+
+class TradelineRow(BaseModel):
+    creditor: str
+    account_type: str
+    monthly_payment: float
+    delinquencies: str
+    standing: str
+
+
+class PublicRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    type: Optional[str] = None
+    status: Optional[str] = None
+    filed_date: Optional[str] = None
+
+
+class CreditSection(BaseModel):
+    fico_score: int
+    bureau_monthly_debt: float
+    public_records: List[PublicRecord]
+    tradelines: List[TradelineRow]
+
+
+class BankTransaction(BaseModel):
+    tx_id: str
+    date: Optional[str] = None
+    description: str
+    amount: float
+    flow: Literal["CREDIT", "DEBIT"]
+    classification: str
+    ai_reasoning: Optional[str] = None
+    options: List[str]
+
+
+class BankSection(BaseModel):
+    bank_name: Optional[str] = None
+    account_mask: Optional[str] = None
+    statement_period_months: float = 3.0
+    avg_eom_balance: float
+    total_inflows: float
+    total_outflows: float
+    transactions: List[BankTransaction]
+    classified_by_ai: bool
+
+
+class AIAssessment(BaseModel):
+    underwriting_decision: str
+    confidence_score: float
+    confidence_pct: str
+    underwriter_memo: str
+    policy_citations: List[str]
+    adverse_action_reasons: List[str]
+    bank_analyst_summary: str
+    execution_log: List[str]
+    error_message: Optional[str] = None
+
+
+class LoanSizing(BaseModel):
+    loan_amount_requested: float
+    monthly_payment: Optional[float]
+    annual_rate: float = ANNUAL_RATE
+    term_months: int = TERM_MONTHS
+
+
+class Dossier(BaseModel):
+    application: ApplicationSummary
+    stated_monthly_income: float
+    sizing: LoanSizing
+    ai_assessment: AIAssessment
+    credit: CreditSection
+    bank: BankSection
+    ratios: RatiosResponse
+
+
+# ---------------------------------------------------------------------------
+# Reference data
+# ---------------------------------------------------------------------------
+class Persona(BaseModel):
+    key: str
+    label: str
+    applicant_name: str
+    ssn_last_4: str
+    stated_annual_income: float
+    loan_amount_requested: float
+    loan_purpose: str
+
+
+class InstallmentQuote(BaseModel):
+    loan_amount: float
+    annual_rate: float
+    term_months: int
+    monthly_payment: float
+
+
+class PolicyDocument(BaseModel):
+    markdown: str
+    html: str
+
+
+class SystemInfo(BaseModel):
+    service: str = "Apex Financial — Autonomous Underwriting API"
+    version: str
+    model: str
+    llm_base_url: str
+    llm_configured: bool
+    storage_mode: str
+    loan_purposes: List[str]
+    loan_amount_min: float = LOAN_AMOUNT_MIN
+    loan_amount_max: float = LOAN_AMOUNT_MAX
+    annual_rate: float = ANNUAL_RATE
+    term_months: int = TERM_MONTHS
+    stats: QueueStats
+
+
+class Message(BaseModel):
+    detail: str

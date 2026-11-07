@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Apex Financial — Applicant Portal{% endblock %}
+{% block subtitle %}Personal Loan Application Portal{% endblock %}
+
+
+{% block sidebar %}
+  <div class="sys-box" style="font-size:0.72rem; line-height:1.4;">
+    <strong>What happens after you apply?</strong><br />
+    Your application is reviewed by our underwriting team. Most applications receive a decision quickly; some require additional review by a credit officer. You will be notified of the outcome.
+  </div>
+{% endblock %}
+
+{% block content %}
+<div class="form-row" style="grid-template-columns: 3.6fr 1.4fr; margin-bottom: 12px;">
+  <div class="fin-card compact" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0;">
+    <div>
+      <span class="card-title">Personal Installment Loan Application</span>
+      <span class="card-sub" style="margin-left:8px;">${{ '{:,.0f}'.format(loan_amount_min) }} – ${{ '{:,.0f}'.format(loan_amount_max) }} ({{ term_months }} Months @ {{ annual_rate_pct }}% APR)</span>
+    </div>
+  </div>
+  <button class="btn btn-block" id="btn-autofill" title="Demo shortcut: Autofill borrower profile">⚡ Autofill Demo Persona</button>
+</div>
+
+<div id="portal-alert"></div>
+
+<form id="application-form" novalidate>
+  <!-- ROW 1: Borrower Information -->
+  <div class="form-row cols-3">
+    <div>
+      <label class="field-label" for="applicant_name">Borrower Legal Name</label>
+      <input type="text" id="applicant_name" name="applicant_name" placeholder="e.g. John Doe" autocomplete="off" />
+    </div>
+    <div>
+      <label class="field-label" for="ssn_last_4">SSN (Last 4)</label>
+      <input type="text" id="ssn_last_4" name="ssn_last_4" maxlength="4" inputmode="numeric" placeholder="e.g. 1234" autocomplete="off" />
+    </div>
+    <div>
+      <label class="field-label" for="stated_annual_income">Gross Annual Income ($)</label>
+      <input type="number" id="stated_annual_income" name="stated_annual_income" min="0" step="1000" placeholder="e.g. 75,000.00" />
+    </div>
+  </div>
+
+  <!-- ROW 2: Loan Amount, Purpose, Live Installment -->
+  <div class="form-row cols-amt">
+    <div>
+      <label class="field-label" for="loan_amount_requested">Loan Amount Requested ($)</label>
+      <input type="number" id="loan_amount_requested" name="loan_amount_requested"
+             min="{{ loan_amount_min }}" max="{{ loan_amount_max }}" step="1000" placeholder="e.g. 15,000.00"
+             title="Recalculates monthly payment on every single increment." />
+    </div>
+    <div>
+      <label class="field-label" for="loan_purpose">Primary Loan Purpose</label>
+      <select id="loan_purpose" name="loan_purpose">
+        <option value="" selected disabled>Select loan purpose...</option>
+        {% for p in loan_purposes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div style="align-self:end;">
+      <div class="calc-preview">
+        <div class="lbl">Calculated Installment</div>
+        <div class="val"><span id="installment-preview" style="font-size:inherit; color:inherit; font-weight:inherit;">—</span> <span>/ mo</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: Consent + Submit -->
+  <div class="form-row cols-submit">
+    <div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="fcra_consent" name="fcra_consent" checked />
+        I provide explicit FCRA and GLBA authorization for credit bureau inquiry and bank cash flow review.
+      </label>
+    </div>
+    <button type="submit" class="btn btn-primary btn-block" id="btn-submit">Submit Loan Application</button>
+  </div>
+</form>
+
+<!-- Persona dialog -->
+<div class="modal-backdrop hidden" id="persona-modal">
+  <div class="modal" style="width:min(560px,100%);">
+    <div class="modal-head">
+      <div class="modal-title">⚡ Autofill Demo Persona</div>
+      <button class="modal-close" data-close-persona>✕</button>
+    </div>
+    <div class="card-sub" style="margin-bottom:12px;">Select a pre-configured borrower profile to test autonomous agent workflow execution:</div>
+    <div class="persona-grid" id="persona-grid"></div>
+    <div style="margin-top:10px;"><button class="btn btn-block" id="btn-clear-form">Clear Form <small style="margin-left:4px;">(Blank Slate)</small></button></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/js/portal.js"></script>{% endblock %}

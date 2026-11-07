@@ -12,8 +12,16 @@ authors = [
     { name = "Apex Financial Engineering Team" }
 ]
 dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "jinja2>=3.1.0",
+    "markdown>=3.5.0",
+    "httpx>=0.27.0",
     "streamlit>=1.35.0",
     "langgraph>=0.2.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary]>=3.2.0",
     "langchain-openai>=0.1.0",
     "pydantic>=2.0.0",
     "requests>=2.31.0",
@@ -29,6 +37,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["loan_agent*", "api*"]
+
+[tool.setuptools.package-data]
+api = ["templates/*.html", "static/css/*.css", "static/js/*.js"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -43,7 +55,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["loan_agent"]
+source = ["loan_agent", "api"]
 omit = ["app.py", "agentic_app.py", "tests/*"]
 
 [tool.coverage.report]

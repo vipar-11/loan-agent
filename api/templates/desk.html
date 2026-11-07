@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Apex Financial — Underwriter Desk{% endblock %}
+{% block subtitle %}Autonomous Underwriting & Adjudication Desk{% endblock %}
+
+{% block header_badges %}
+  <span class="badge-pill badge-amber">⏳ <span data-stat="pending_review">0</span> PENDING REVIEW</span>
+  <span class="badge-pill badge-green">🏁 <span data-stat="adjudicated">0</span> ADJUDICATED</span>
+{% endblock %}
+
+{% block sidebar %}
+  <div class="section-label subtle">Queue Overview</div>
+  <div class="metric-grid-2">
+    <div class="fin-metric"><div class="fin-metric-label">Pending Review</div><div class="fin-metric-value txt-amber" data-stat="pending_review">0</div></div>
+    <div class="fin-metric"><div class="fin-metric-label">Adjudicated</div><div class="fin-metric-value txt-green" data-stat="adjudicated">0</div></div>
+  </div>
+{% endblock %}
+
+
+{% block content %}
+<div class="fin-card" style="padding:12px 18px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+  <div>
+    <div class="card-title" style="margin-bottom:2px;">Underwriting Review & Adjudication Desk</div>
+    <div class="card-sub">Inspect pending credit requests, verify financial ratios, and record final credit determination.</div>
+  </div>
+  <span class="badge-pill badge-green">Credit Officer Desk</span>
+</div>
+
+<div id="desk-alert"></div>
+
+<div class="tabs" data-tabs="desk">
+  <button class="tab-btn active" data-tab="pending">📥 Pending Loan Review Queue (<span data-stat="pending_review">0</span>)</button>
+  <button class="tab-btn" data-tab="archive">🏁 Adjudicated / Completed Archive (<span data-stat="adjudicated">0</span>)</button>
+</div>
+
+<!-- TAB: PENDING REVIEW -->
+<section class="tab-panel active" data-scope="desk" data-panel="pending">
+  <div class="section-label">Escalated Queue Items — Click to Open Review Modal</div>
+  <div id="pending-queue"></div>
+</section>
+
+<!-- TAB: ARCHIVE -->
+<section class="tab-panel" data-scope="desk" data-panel="archive">
+  <div id="archive-table"></div>
+  <div id="archive-inspector" class="hidden">
+    <hr />
+    <div class="section-label">📜 Compliance Audit Trail Dossier Inspector</div>
+    <div class="form-row" style="grid-template-columns: 1fr; margin-bottom:10px;">
+      <div>
+        <label class="field-label" for="archive-select">Select Adjudicated File to Inspect:</label>
+        <select id="archive-select"></select>
+      </div>
+    </div>
+    <div id="archive-detail"></div>
+  </div>
+</section>
+
+<!-- ADJUDICATION MODAL -->
+<div class="modal-backdrop hidden" id="review-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">📋 Underwriting Adjudication Review</div>
+      <button class="modal-close" id="btn-modal-close">✕</button>
+    </div>
+    <div id="modal-body"><div class="txt-muted"><span class="spinner"></span> Loading dossier...</div></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/js/desk.js"></script>{% endblock %}

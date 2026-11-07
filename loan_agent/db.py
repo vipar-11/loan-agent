@@ -6,11 +6,43 @@ Supports both local SQLite and remote PostgreSQL storage.
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import functools
 import json
 import os
 import sqlite3
+import threading
 
 from loan_agent.config import DatabaseConfig, load_db_config
+
+
+# ---------------------------------------------------------------------------
+# Canonical administrator statuses. Every persisted status rolls up into exactly one of these five.
+# ---------------------------------------------------------------------------
+MAIN_STATUSES: List[str] = ["new", "pending processing", "pending review", "approved", "rejected"]
+
+MAIN_STATUS_LABELS: Dict[str, str] = {
+    "new": "New",
+    "pending processing": "Pending Processing",
+    "pending review": "Pending Review",
+    "approved": "Approved",
+    "rejected": "Rejected",
+}
+
+
+def main_status_for(status: Optional[str]) -> str:
+    """Rolls a persisted status (e.g. HUMAN_DENIED) up into its administrator-facing main status (e.g. rejected)."""
+    clean = (status or "").strip().upper().replace("-", "_").replace(" ", "_")
+    if clean == "NEW":
+        return "new"
+    if clean == "PENDING_PROCESSING":
+        return "pending processing"
+    if clean == "PENDING_REVIEW":
+        return "pending review"
+    if "APPROV" in clean:
+        return "approved"
+    if "DEN" in clean or "REJECT" in clean:
+        return "rejected"
+    return "new"
 
 
 def normalize_status_filter(status: Optional[str]) -> Optional[List[str]]:
@@ -38,6 +70,17 @@ def normalize_status_filter(status: Optional[str]) -> Optional[List[str]]:
         return [status.strip().upper(), status.strip()]
 
 
+def _synchronized(method):
+    """Serializes access to the shared DB connection (FastAPI executes sync handlers in a threadpool)."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class ApplicationDatabase:
     """Persistent storage manager for loan applications and regulatory audit trails."""
 
@@ -49,6 +92,7 @@ class ApplicationDatabase:
     ):
         self.config = config or load_db_config()
         self.in_memory = in_memory
+        self._lock = threading.RLock()
 
         if self.in_memory:
             self.backend = "sqlite"
@@ -117,6 +161,35 @@ class ApplicationDatabase:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_loan_audit_app_id ON loan_audit_trail(application_id);"
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trigger_source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    found INTEGER DEFAULT 0,
+                    selected INTEGER DEFAULT 0,
+                    approved INTEGER DEFAULT 0,
+                    rejected INTEGER DEFAULT 0,
+                    escalated INTEGER DEFAULT 0,
+                    errors INTEGER DEFAULT 0,
+                    error_message TEXT
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT
+                );
+                """
+            )
             self.conn.commit()
         else:
             cursor.execute(
@@ -157,6 +230,35 @@ class ApplicationDatabase:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_loan_audit_app_id ON loan_audit_trail(application_id);"
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_runs (
+                    id SERIAL PRIMARY KEY,
+                    trigger_source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    found INTEGER DEFAULT 0,
+                    selected INTEGER DEFAULT 0,
+                    approved INTEGER DEFAULT 0,
+                    rejected INTEGER DEFAULT 0,
+                    escalated INTEGER DEFAULT 0,
+                    errors INTEGER DEFAULT 0,
+                    error_message TEXT
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT
+                );
+                """
+            )
             self.conn.commit()
 
     def _serialize(self, obj: Any) -> Optional[str]:
@@ -176,6 +278,7 @@ class ApplicationDatabase:
         except Exception:
             return val
 
+    @_synchronized
     def save_application(
         self,
         app_data: Dict[str, Any],
@@ -276,6 +379,7 @@ class ApplicationDatabase:
 
         return self.get_application(app_id)  # type: ignore
 
+    @_synchronized
     def get_application(self, application_id: str) -> Optional[Dict[str, Any]]:
         """Case-insensitive retrieval of an application record."""
         cursor = self.conn.cursor()
@@ -292,6 +396,7 @@ class ApplicationDatabase:
         data["graph_state"] = self._deserialize(data.get("graph_state"))
         return data
 
+    @_synchronized
     def update_application(
         self,
         application_id: str,
@@ -319,6 +424,7 @@ class ApplicationDatabase:
         )
         return True
 
+    @_synchronized
     def list_applications(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Lists application records, optionally filtered by normalized status.
@@ -350,6 +456,7 @@ class ApplicationDatabase:
             results.append(data)
         return results
 
+    @_synchronized
     def count_applications(self, status: Optional[str] = None) -> int:
         """Returns the total number of applications matching the optional status filter."""
         cursor = self.conn.cursor()
@@ -370,6 +477,7 @@ class ApplicationDatabase:
         else:
             return list(res.values())[0] if res else 0
 
+    @_synchronized
     def add_audit_event(
         self,
         application_id: str,
@@ -406,6 +514,7 @@ class ApplicationDatabase:
         self.conn.commit()
         return cursor.lastrowid or 0
 
+    @_synchronized
     def get_audit_trail(self, application_id: str) -> List[Dict[str, Any]]:
         """Retrieves chronological audit events for an application (case-insensitive)."""
         cursor = self.conn.cursor()
@@ -424,13 +533,153 @@ class ApplicationDatabase:
             results.append(data)
         return results
 
-    def clear_all(self) -> None:
-        """Clears all records from applications and audit trail tables."""
+    # ------------------------------------------------------------------
+    # Status summary (administrator view)
+    # ------------------------------------------------------------------
+    @_synchronized
+    def count_by_status(self) -> Dict[str, int]:
+        """Exact record counts grouped by persisted status."""
         cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM loan_audit_trail;")
-        cursor.execute("DELETE FROM loan_applications;")
+        cursor.execute("SELECT status, COUNT(*) AS n FROM loan_applications GROUP BY status")
+        rows = cursor.fetchall()
+        result: Dict[str, int] = {}
+        for r in rows:
+            d = dict(r)
+            key = str(d.get("status") or "UNKNOWN").upper()
+            result[key] = result.get(key, 0) + int(d.get("n") or d.get("COUNT(*)") or 0)
+        return result
+
+    def status_summary(self) -> List[Dict[str, Any]]:
+        """
+        Administrator summary across the five main statuses
+        (new, pending processing, pending review, approved, rejected), each with its sub-status breakdown.
+        """
+        by_status = self.count_by_status()
+        groups: Dict[str, Dict[str, int]] = {m: {} for m in MAIN_STATUSES}
+        for status_name, count in by_status.items():
+            groups[main_status_for(status_name)][status_name] = count
+        return [
+            {
+                "status": m,
+                "label": MAIN_STATUS_LABELS[m],
+                "count": sum(groups[m].values()),
+                "sub_statuses": dict(sorted(groups[m].items())),
+            }
+            for m in MAIN_STATUSES
+        ]
+
+    # ------------------------------------------------------------------
+    # Workflow run log (initiate_workflow executions)
+    # ------------------------------------------------------------------
+    def _row_to_run(self, row: Any) -> Dict[str, Any]:
+        return dict(row)
+
+    @_synchronized
+    def create_workflow_run(self, trigger_source: str, status: str = "REQUESTED") -> Dict[str, Any]:
+        """Records that an initiate_workflow run was requested. Returns the new run record."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = self.conn.cursor()
+        if self.backend == "sqlite":
+            cursor.execute(
+                "INSERT INTO workflow_runs (trigger_source, status, requested_at) VALUES (?, ?, ?)",
+                (trigger_source, status, now_str),
+            )
+            run_id = cursor.lastrowid
+        else:
+            cursor.execute(
+                "INSERT INTO workflow_runs (trigger_source, status, requested_at) VALUES (%s, %s, %s) RETURNING id",
+                (trigger_source, status, now_str),
+            )
+            run_id = list(cursor.fetchone().values())[0]
+        self.conn.commit()
+        return self.get_workflow_run(int(run_id))  # type: ignore[return-value]
+
+    @_synchronized
+    def update_workflow_run(self, run_id: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Updates progress/outcome columns of a workflow run (append-only semantics; nothing is removed)."""
+        allowed = {
+            "status", "started_at", "finished_at", "found", "selected",
+            "approved", "rejected", "escalated", "errors", "error_message",
+        }
+        fields = {k: v for k, v in updates.items() if k in allowed}
+        if not fields:
+            return self.get_workflow_run(run_id)
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        assignments = ", ".join(f"{k} = {placeholder}" for k in fields)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE workflow_runs SET {assignments} WHERE id = {placeholder}",
+            (*fields.values(), run_id),
+        )
+        self.conn.commit()
+        return self.get_workflow_run(run_id)
+
+    @_synchronized
+    def get_workflow_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM workflow_runs WHERE id = {placeholder}", (run_id,))
+        row = cursor.fetchone()
+        return self._row_to_run(row) if row else None
+
+    @_synchronized
+    def list_workflow_runs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Most recent workflow runs first."""
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM workflow_runs ORDER BY id DESC LIMIT {placeholder}", (int(limit),))
+        return [self._row_to_run(r) for r in cursor.fetchall()]
+
+    def get_last_workflow_run(self) -> Optional[Dict[str, Any]]:
+        runs = self.list_workflow_runs(limit=1)
+        return runs[0] if runs else None
+
+    # ------------------------------------------------------------------
+    # System settings (key/value, persisted across restarts)
+    # ------------------------------------------------------------------
+    @_synchronized
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT value FROM system_settings WHERE key = {placeholder}", (key,))
+        row = cursor.fetchone()
+        if not row:
+            return default
+        return str(dict(row)["value"])
+
+    @_synchronized
+    def set_setting(self, key: str, value: Any, updated_by: str = "SYSTEM") -> None:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor = self.conn.cursor()
+        if self.backend == "sqlite":
+            cursor.execute(
+                """
+                INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at,
+                                               updated_by = excluded.updated_by
+                """,
+                (key, str(value), now_str, updated_by),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at,
+                                                updated_by = EXCLUDED.updated_by
+                """,
+                (key, str(value), now_str, updated_by),
+            )
         self.conn.commit()
 
+    @_synchronized
+    def get_setting_record(self, key: str) -> Optional[Dict[str, Any]]:
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM system_settings WHERE key = {placeholder}", (key,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    @_synchronized
     def close(self) -> None:
         """Closes the underlying database connection."""
         if hasattr(self, "conn") and self.conn:

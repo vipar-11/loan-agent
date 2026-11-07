@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# setup_env.sh — Developer sandbox bootstrap for the Apex Financial loan-agent.
+#
+#   1. Creates a Python virtual environment (./venv by default)
+#   2. Activates it
+#   3. Installs requirements.txt and requirements-dev.txt
+#
+# Usage (recommended — keeps the venv active in your current shell):
+#   source ./setup_env.sh
+#
+# Also works when executed directly (the venv is created and populated, but a
+# subprocess cannot activate a venv in your shell, so run `source venv/bin/activate`
+# afterwards — the script reminds you):
+#   ./setup_env.sh
+#
+# Options (environment variables):
+#   VENV_DIR=.venv   source ./setup_env.sh     # custom venv location
+#   PYTHON=python3.12 source ./setup_env.sh    # pick a specific interpreter
+# ---------------------------------------------------------------------------
+
+# Detect whether the script is being sourced (so we can `return` instead of `exit`).
+_apex_sourced=0
+if [ -n "${ZSH_VERSION:-}" ]; then
+  case $ZSH_EVAL_CONTEXT in *:file) _apex_sourced=1;; esac
+elif [ -n "${BASH_VERSION:-}" ]; then
+  [ "${BASH_SOURCE[0]}" != "$0" ] && _apex_sourced=1
+fi
+
+_apex_fail() {
+  echo "❌ $1" >&2
+  if [ "$_apex_sourced" -eq 1 ]; then return 1; else exit 1; fi
+}
+
+# Resolve project root (directory containing this script) so it works from anywhere.
+if [ -n "${BASH_SOURCE:-}" ]; then _apex_script="${BASH_SOURCE[0]}"; else _apex_script="$0"; fi
+PROJECT_ROOT="$(cd "$(dirname "$_apex_script")" && pwd)"
+VENV_DIR="${VENV_DIR:-$PROJECT_ROOT/venv}"
+PYTHON="${PYTHON:-python3}"
+
+echo "🏦 Apex Financial — loan-agent sandbox setup"
+echo "   Project root : $PROJECT_ROOT"
+echo "   Interpreter  : $($PYTHON --version 2>&1)  ($(command -v "$PYTHON"))"
+echo "   Virtual env  : $VENV_DIR"
+echo
+
+# 1. Create the virtual environment (idempotent).
+if [ ! -f "$VENV_DIR/bin/activate" ]; then
+  echo "▶ Creating virtual environment..."
+  "$PYTHON" -m venv "$VENV_DIR" || _apex_fail "Failed to create virtual environment with '$PYTHON -m venv'." || return 1
+else
+  echo "▶ Virtual environment already exists — reusing."
+fi
+
+# 2. Activate it.
+echo "▶ Activating virtual environment..."
+# shellcheck disable=SC1091
+. "$VENV_DIR/bin/activate" || _apex_fail "Failed to activate $VENV_DIR." || return 1
+
+# 3. Install dependencies from both requirements files.
+echo "▶ Upgrading pip..."
+python -m pip install --upgrade pip >/dev/null || _apex_fail "pip upgrade failed." || return 1
+
+echo "▶ Installing requirements.txt..."
+python -m pip install -r "$PROJECT_ROOT/requirements.txt" || _apex_fail "Failed installing requirements.txt." || return 1
+
+echo "▶ Installing requirements-dev.txt..."
+python -m pip install -r "$PROJECT_ROOT/requirements-dev.txt" || _apex_fail "Failed installing requirements-dev.txt." || return 1
+
+echo
+echo "✅ Sandbox ready."
+echo "   Python : $(python --version 2>&1) at $(command -v python)"
+echo
+echo "   Next steps:"
+echo "     cp .env.example .env            # (if present) add GROQ_API_KEY / OPENAI_API_KEY / LLM_API_KEY"
+echo "     python run_api.py --reload      # FastAPI agentic service  -> http://localhost:8000/portal"
+echo "     streamlit run agentic_app.py    # Streamlit agentic workbench (legacy, co-existing)"
+echo "     streamlit run app.py            # Streamlit manual workbench"
+echo "     pytest -m \"not integration\"     # test suite"
+if [ "$_apex_sourced" -eq 0 ]; then
+  echo
+  echo "   ℹ️  You executed this script, so the venv is active only inside it."
+  echo "      Activate it in your shell with:  source \"$VENV_DIR/bin/activate\""
+  echo "      (Next time, run:  source ./setup_env.sh  to activate automatically.)"
+fi
+
+unset _apex_sourced _apex_fail _apex_script

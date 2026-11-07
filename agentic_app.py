@@ -541,13 +541,6 @@ with st.sidebar:
             </div>"""
         )
 
-        if st.button("Reset Application Database", use_container_width=True):
-            get_app_database().clear_all()
-            st.session_state["loan_applications"] = {}
-            st.session_state["form_gen"] += 1
-            st.session_state["active_review_app_id"] = None
-            st.rerun()
-
     else:
         st.markdown("<hr style='border-color:#E2E8F0; margin:14px 0;'/>", unsafe_allow_html=True)
         st.html(
