@@ -221,7 +221,7 @@
         <div class="section-label">Human Credit Officer Determination</div>
         <form id="decision-form">
           <label class="field-label" for="officer">Adjudicating Officer *</label>
-          <input type="text" id="officer" value="James Thornton, Senior Underwriter" />
+          <input type="text" id="officer" value="Human Underwriter" />
           <label class="field-label" for="notes" style="margin-top:10px;">Credit Officer Justification (Mandatory) *</label>
           <textarea id="notes" placeholder="e.g. Verified W-2 and pay stubs; tax withholding explains income variance. Approved 41.8% DTI within near-prime policy guidelines." title="Mandatory: Record justification memorandum before finalizing credit determination."></textarea>
           <div id="decision-error" style="margin-top:8px;"></div>

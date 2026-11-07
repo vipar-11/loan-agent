@@ -32,8 +32,8 @@ TERM_MONTHS = 36
 class ApplicationCreate(BaseModel):
     """Applicant Portal submission payload."""
 
-    applicant_name: str = Field(..., min_length=1, max_length=120, examples=["Sarah Jenkins"])
-    ssn_last_4: str = Field(..., pattern=r"^\d{4}$", examples=["4401"])
+    applicant_name: str = Field(..., min_length=1, max_length=120, examples=["Mrs. Some Name"])
+    ssn_last_4: str = Field(..., pattern=r"^\d{4}$", examples=["1111"])
     stated_annual_income: float = Field(..., gt=0, examples=[96000.0])
     loan_amount_requested: float = Field(..., ge=LOAN_AMOUNT_MIN, le=LOAN_AMOUNT_MAX, examples=[15000.0])
     loan_purpose: LoanPurpose = Field(..., examples=["Home Improvement"])
@@ -69,7 +69,7 @@ class ApplicationSummary(BaseModel):
 
     application_id: str
     applicant_name: str
-    ssn_masked: str = Field(..., examples=["••••-4401"])
+    ssn_masked: str = Field(..., examples=["••••-1111"])
     stated_annual_income: float
     loan_amount_requested: float
     loan_purpose: str
@@ -215,7 +215,7 @@ class WorkflowScheduledResponse(BaseModel):
 
 class HumanDecisionRequest(BaseModel):
     decision: HumanDecision
-    officer: str = Field("James Thornton, Senior Underwriter", max_length=120)
+    officer: str = Field("Human Underwriter", max_length=120)
     notes: str = Field(..., description="Mandatory credit officer justification memorandum.")
 
     @field_validator("notes")

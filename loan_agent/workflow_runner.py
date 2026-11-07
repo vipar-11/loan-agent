@@ -177,7 +177,7 @@ def resume_with_human_decision(
     application_id: str,
     decision: Literal["APPROVE", "DENY"],
     notes: str,
-    officer: str = "James Thornton, Senior Underwriter",
+    officer: str = "Human Underwriter",
     app_db: Optional[ApplicationDatabase] = None,
     checkpointer: Optional[Any] = None,
     config: Optional[DatabaseConfig] = None,
@@ -204,7 +204,7 @@ def resume_with_human_decision(
     if not notes_clean:
         raise ValueError("Mandatory: enter the underwriter justification memorandum before adjudicating.")
 
-    officer_clean = (officer or "").strip() or "James Thornton, Senior Underwriter"
+    officer_clean = (officer or "").strip() or "Human Underwriter"
     graph_state = app.get("graph_state") or {}
     app_id = app["application_id"]
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

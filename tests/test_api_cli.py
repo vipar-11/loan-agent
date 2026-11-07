@@ -58,20 +58,20 @@ class TestListLoansCli:
         assert "No loan applications found" in capsys.readouterr().out
 
     def test_table_listing_and_status_filter(self, http, cli, capsys):
-        submit(http, "SARAH_JENKINS")
-        submit(http, "MARCUS_VANCE")
+        submit(http, "MRS_SOME_NAME")
+        submit(http, "MR_SOME_NAME")
         assert main_list_loans([], client=cli) == 0
         out = capsys.readouterr().out
         assert "Found 2 loan application(s)" in out
-        assert "Sarah Jenkins" in out and "Marcus Vance" in out and "$15,000.00" in out
+        assert "Mrs. Some Name" in out and "Mr. Some Name" in out and "$15,000.00" in out
 
         assert main_list_loans(["--status", "pending review"], client=cli) == 0
         assert "No loan applications found matching status: 'pending review'" in capsys.readouterr().out
 
     def test_count_prints_summary_by_status(self, http, cli, capsys):
-        for key in ("SARAH_JENKINS", "MARCUS_VANCE", "DAVID_CHEN"):
+        for key in ("MRS_SOME_NAME", "MR_SOME_NAME", "MS_SOME_NAME"):
             submit(http, key)
-        http.post("/api/v1/workflows/run", params={"sync": "true"}, json={"limit": 2})  # Sarah -> approved, Marcus -> denied
+        http.post("/api/v1/workflows/run", params={"sync": "true"}, json={"limit": 2})  # Mrs. Some Name -> approved, Mr. Some Name -> denied
         capsys.readouterr()
 
         assert main_list_loans(["--count"], client=cli) == 0
@@ -86,7 +86,7 @@ class TestListLoansCli:
         assert "TOTAL                                 3" in out
 
     def test_count_with_status_filter(self, http, cli, capsys):
-        for key in ("SARAH_JENKINS", "MARCUS_VANCE"):
+        for key in ("MRS_SOME_NAME", "MR_SOME_NAME"):
             submit(http, key)
         http.post("/api/v1/workflows/run", params={"sync": "true"}, json={})
         capsys.readouterr()  # discard the server-side batch-run console output
@@ -111,7 +111,7 @@ class TestTraceLoanCli:
         assert "was not found" in capsys.readouterr().out
 
     def test_trace_full_lifecycle(self, http, cli, capsys):
-        app_id = submit(http, "DAVID_CHEN")
+        app_id = submit(http, "MS_SOME_NAME")
         http.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"})
         http.post(f"/api/v1/applications/{app_id}/decision",
                   json={"decision": "APPROVE", "notes": "Verified W-2 documentation."})
@@ -120,7 +120,7 @@ class TestTraceLoanCli:
         assert main_trace_loan(["--app_id", app_id.lower()], client=cli) == 0
         out = capsys.readouterr().out
         assert f"CONSOLIDATED AUDIT & EXECUTION TRACE: {app_id}" in out
-        assert "APPLICATION METADATA & PROFILE" in out and "David Chen" in out
+        assert "APPLICATION METADATA & PROFILE" in out and "Ms. Some Name" in out
         assert "ADJUDICATION OUTCOME" in out and "HUMAN_APPROVED" in out
         assert "WORKFLOW STATE & FINANCIAL METRICS" in out and "Post-Loan DTI" in out
         assert "Workflow Execution Log:" in out
@@ -128,7 +128,7 @@ class TestTraceLoanCli:
         assert "HUMAN_REVIEW_DECISION" in out
 
     def test_trace_before_workflow_runs(self, http, cli, capsys):
-        app_id = submit(http, "SARAH_JENKINS")
+        app_id = submit(http, "MRS_SOME_NAME")
         assert main_trace_loan(["--app_id", app_id], client=cli) == 0
         out = capsys.readouterr().out
         assert "(Workflow has not been executed for this application yet)" in out
@@ -137,14 +137,14 @@ class TestTraceLoanCli:
 
 class TestInitiateWorkflowCli:
     def test_dry_run_leaves_records_untouched(self, http, cli, capsys, test_app_db):
-        app_id = submit(http, "SARAH_JENKINS")
+        app_id = submit(http, "MRS_SOME_NAME")
         assert main_initiate_workflow(["--dry-run"], client=cli) == 0
         out = capsys.readouterr().out
         assert "[DRY RUN] Found 1 new loan application(s)" in out
         assert test_app_db.get_application(app_id)["status"] == "NEW"
 
     def test_run_is_fire_and_forget(self, http, cli, capsys, test_app_db):
-        ids = {key: submit(http, key) for key in ("SARAH_JENKINS", "MARCUS_VANCE", "DAVID_CHEN")}
+        ids = {key: submit(http, key) for key in ("MRS_SOME_NAME", "MR_SOME_NAME", "MS_SOME_NAME")}
         assert main_initiate_workflow([], client=cli) == 0
         out = capsys.readouterr().out
         assert "Approval workflow run #1 accepted (REQUESTED)" in out
@@ -154,13 +154,13 @@ class TestInitiateWorkflowCli:
         run = http.get("/api/v1/workflows/runs/1").json()
         assert run["trigger_source"] == "CLI" and run["status"] == "COMPLETED"
         assert (run["approved"], run["rejected"], run["escalated"]) == (1, 1, 1)
-        assert test_app_db.get_application(ids["SARAH_JENKINS"])["status"] == "AUTO_APPROVED"
-        assert test_app_db.get_application(ids["MARCUS_VANCE"])["status"] == "AUTO_DENIED"
-        assert test_app_db.get_application(ids["DAVID_CHEN"])["status"] == "PENDING_REVIEW"
+        assert test_app_db.get_application(ids["MRS_SOME_NAME"])["status"] == "AUTO_APPROVED"
+        assert test_app_db.get_application(ids["MR_SOME_NAME"])["status"] == "AUTO_DENIED"
+        assert test_app_db.get_application(ids["MS_SOME_NAME"])["status"] == "PENDING_REVIEW"
 
     def test_limit_flag(self, http, cli, capsys, test_app_db):
-        submit(http, "SARAH_JENKINS")
-        submit(http, "MARCUS_VANCE")
+        submit(http, "MRS_SOME_NAME")
+        submit(http, "MR_SOME_NAME")
         assert main_initiate_workflow(["--limit", "1"], client=cli) == 0
         assert "(limit 1)" in capsys.readouterr().out
         assert len([a for a in test_app_db.list_applications(status="new")]) == 1

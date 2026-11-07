@@ -61,7 +61,7 @@ class TestAutoClassifyTransaction:
         assert auto_classify_transaction(tx) == "NSF / Overdraft Fee"
 
     def test_classify_bnpl_outflow(self):
-        tx = {"amount": -250.0, "description": "AFFIRM *PYMT 8821"}
+        tx = {"amount": -250.0, "description": "AFFIRM *PYMT 0000"}
         assert auto_classify_transaction(tx) == "Undisclosed Debt / BNPL"
 
     def test_classify_bureau_debt_outflow(self):

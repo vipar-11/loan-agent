@@ -7,9 +7,9 @@
   const preview = $('installment-preview');
 
   const PERSONA_HINTS = {
-    SARAH_JENKINS: 'Prime $15,000 → Auto-Approve',
-    MARCUS_VANCE: 'Subprime $20,000 → Auto-Deny',
-    DAVID_CHEN: 'Nuanced $35,000 → Escalate',
+    MRS_SOME_NAME: 'Prime $15,000 → Auto-Approve',
+    MR_SOME_NAME: 'Subprime $20,000 → Auto-Deny',
+    MS_SOME_NAME: 'Nuanced $35,000 → Escalate',
   };
 
   /* ---------------- Live installment preview ---------------- */

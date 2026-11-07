@@ -2,9 +2,9 @@
 test_integration_workflow.py
 Live integration test suite running the 6-node LangGraph agentic workflow
 with real LLM reasoning across the three pre-configured applicant personas:
-1. Sarah Jenkins: Auto-Approval (Prime Tier)
-2. Marcus Vance: Hard Knockout Auto-Denial (Subprime Knockouts)
-3. David Chen: Manual Escalation with Human-in-the-Loop Interruption and Resumption
+1. Mrs. Some Name: Auto-Approval (Prime Tier)
+2. Mr. Some Name: Hard Knockout Auto-Denial (Subprime Knockouts)
+3. Ms. Some Name: Manual Escalation with Human-in-the-Loop Interruption and Resumption
 """
 import os
 import pytest
@@ -33,14 +33,14 @@ skip_if_no_key = pytest.mark.skipif(
 @pytest.mark.integration
 @skip_if_no_key
 class TestLiveWorkflowPersonas:
-    def test_sarah_jenkins_auto_approval(self):
+    def test_mrs_some_name_auto_approval(self):
         """
-        Persona 1 (Sarah Jenkins):
+        Persona 1 (Mrs. Some Name):
         - FICO 745, DTI ~24.98%, Discharged bankruptcy from 2018 (not active), 0 NSF fees, 0 delinquencies.
         - Expected: LLM policy underwriter issues APPROVE.
         - Graph reaches finalize_application_node with AUTO_APPROVED final status.
         """
-        profile = APPLICANT_PROFILES["SARAH_JENKINS"]
+        profile = APPLICANT_PROFILES["MRS_SOME_NAME"]
         initial_state: LoanApplicationState = {
             "application_id": profile["application_id"],
             "applicant_name": profile["applicant_name"],
@@ -52,7 +52,7 @@ class TestLiveWorkflowPersonas:
         }
 
         graph = build_underwriting_graph()
-        config = {"configurable": {"thread_id": "test-integration-sarah"}}
+        config = {"configurable": {"thread_id": "test-integration-mrs-some-name"}}
 
         result = graph.invoke(initial_state, config=config)
 
@@ -80,15 +80,15 @@ class TestLiveWorkflowPersonas:
         assert result.get("post_loan_dti") is not None
         assert result.get("post_loan_dti") <= 36.0
 
-    def test_marcus_vance_auto_denial(self):
+    def test_mr_some_name_auto_denial(self):
         """
-        Persona 2 (Marcus Vance):
+        Persona 2 (Mr. Some Name):
         - FICO 595 (<620), 3 delinquencies (>1), 4 NSF fees (>2), DTI ~63.96% (>45%).
         - Expected: LLM policy underwriter issues DENY.
         - Must include ECOA-compliant adverse action reasons.
         - Graph reaches finalize_application_node with AUTO_DENIED final status.
         """
-        profile = APPLICANT_PROFILES["MARCUS_VANCE"]
+        profile = APPLICANT_PROFILES["MR_SOME_NAME"]
         initial_state: LoanApplicationState = {
             "application_id": profile["application_id"],
             "applicant_name": profile["applicant_name"],
@@ -100,7 +100,7 @@ class TestLiveWorkflowPersonas:
         }
 
         graph = build_underwriting_graph()
-        config = {"configurable": {"thread_id": "test-integration-marcus"}}
+        config = {"configurable": {"thread_id": "test-integration-mr-some-name"}}
 
         result = graph.invoke(initial_state, config=config)
 
@@ -122,15 +122,15 @@ class TestLiveWorkflowPersonas:
         # 4. Underwriter Memo
         assert len(result.get("underwriter_memo", "")) > 20
 
-    def test_david_chen_escalate_human_review_and_resume(self):
+    def test_ms_some_name_escalate_human_review_and_resume(self):
         """
-        Persona 3 (David Chen):
+        Persona 3 (Ms. Some Name):
         - FICO 710, loan $35,000, DTI ~41.84%, income variance ~21.45%.
         - Expected: Decision is ESCALATE.
         - Graph intercepts and PAUSES execution before `human_review_node`.
         - Resuming with human underwriter approval finishes the workflow with HUMAN_APPROVED.
         """
-        profile = APPLICANT_PROFILES["DAVID_CHEN"]
+        profile = APPLICANT_PROFILES["MS_SOME_NAME"]
         initial_state: LoanApplicationState = {
             "application_id": profile["application_id"],
             "applicant_name": profile["applicant_name"],
@@ -142,7 +142,7 @@ class TestLiveWorkflowPersonas:
         }
 
         graph = build_underwriting_graph()
-        config = {"configurable": {"thread_id": "test-integration-david"}}
+        config = {"configurable": {"thread_id": "test-integration-ms-some-name"}}
 
         # Step 1: Initial invocation triggers workflow and halts before human review
         paused_result = graph.invoke(initial_state, config=config)

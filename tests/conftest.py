@@ -293,7 +293,7 @@ def clean_bank_statement() -> Dict[str, Any]:
     """Plaid 90-day bank ledger with consistent payroll deposits and strong liquidity."""
     return {
         "bank_name": "Chase Checking",
-        "account_mask": "1234",
+        "account_mask": "0000",
         "statement_period_months": 3,
         "eom_balances": [
             {"month": "2026-07", "ending_balance": 8500.00},

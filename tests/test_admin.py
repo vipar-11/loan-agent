@@ -64,8 +64,8 @@ class TestListLoans:
     def test_list_loans_tabular_output(self, test_app_db, capsys):
         test_app_db.save_application({
             "application_id": "APP-001",
-            "applicant_name": "Sarah Jenkins",
-            "ssn_last_4": "4401",
+            "applicant_name": "Mrs. Some Name",
+            "ssn_last_4": "1111",
             "stated_annual_income": 96000.0,
             "loan_amount_requested": 15000.0,
             "loan_purpose": "Debt Consolidation",
@@ -75,7 +75,7 @@ class TestListLoans:
         count = list_loans_action(status="approved", app_db=test_app_db)
         assert count == 1
         captured = capsys.readouterr()
-        assert "Sarah Jenkins" in captured.out
+        assert "Mrs. Some Name" in captured.out
         assert "APP-001" in captured.out
         assert "$15,000.00" in captured.out
 
@@ -83,8 +83,8 @@ class TestListLoans:
         # Seed test loan
         test_app_db.save_application({
             "application_id": "APP-2026-001",
-            "applicant_name": "Sarah Jenkins",
-            "ssn_last_4": "4401",
+            "applicant_name": "Mrs. Some Name",
+            "ssn_last_4": "1111",
             "stated_annual_income": 96000.0,
             "loan_amount_requested": 15000.0,
             "loan_purpose": "Debt Consolidation",
@@ -128,14 +128,14 @@ class TestTraceLoan:
         assert "not found" in captured.out
 
     def test_trace_loan_case_insensitive_and_consolidated(self, test_app_db, test_checkpointer, capsys):
-        sarah = APPLICANT_PROFILES["SARAH_JENKINS"]
+        persona = APPLICANT_PROFILES["MRS_SOME_NAME"]
         test_app_db.save_application({
-            "application_id": sarah["application_id"],
-            "applicant_name": sarah["applicant_name"],
-            "ssn_last_4": sarah["ssn_last_4"],
-            "stated_annual_income": float(sarah["stated_annual_income"]),
-            "loan_amount_requested": float(sarah["loan_amount_requested"]),
-            "loan_purpose": sarah["loan_purpose"],
+            "application_id": persona["application_id"],
+            "applicant_name": persona["applicant_name"],
+            "ssn_last_4": persona["ssn_last_4"],
+            "stated_annual_income": float(persona["stated_annual_income"]),
+            "loan_amount_requested": float(persona["loan_amount_requested"]),
+            "loan_purpose": persona["loan_purpose"],
             "fcra_consent": True,
             "status": "NEW",
         })
@@ -144,7 +144,7 @@ class TestTraceLoan:
         run_initiate_workflow(app_db=test_app_db, checkpointer=test_checkpointer)
 
         # Query trace using lowercase app-2026-001 (case-insensitive)
-        lower_id = sarah["application_id"].lower()
+        lower_id = persona["application_id"].lower()
         success = trace_loan_action(
             app_id=lower_id,
             app_db=test_app_db,
@@ -154,8 +154,8 @@ class TestTraceLoan:
         captured = capsys.readouterr()
 
         # Verify consolidated information from both DB and Langgraph
-        assert sarah["applicant_name"] in captured.out
-        assert sarah["application_id"] in captured.out
+        assert persona["applicant_name"] in captured.out
+        assert persona["application_id"] in captured.out
         assert "CONSOLIDATED AUDIT & EXECUTION TRACE" in captured.out
         assert "APPLICATION METADATA" in captured.out
         assert "ADJUDICATION OUTCOME" in captured.out
@@ -166,8 +166,8 @@ class TestTraceLoan:
     def test_main_trace_loan_cli(self, test_app_db, test_checkpointer, monkeypatch):
         test_app_db.save_application({
             "application_id": "APP-2026-001",
-            "applicant_name": "Sarah Jenkins",
-            "ssn_last_4": "4401",
+            "applicant_name": "Mrs. Some Name",
+            "ssn_last_4": "1111",
             "stated_annual_income": 96000.0,
             "loan_amount_requested": 15000.0,
             "loan_purpose": "Debt Consolidation",

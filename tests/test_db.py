@@ -54,8 +54,8 @@ class TestApplicationDatabase:
     def test_save_and_get_application(self, test_app_db):
         app_data = {
             "application_id": "APP-2026-101",
-            "applicant_name": "Alice Morgan",
-            "ssn_last_4": "1122",
+            "applicant_name": "Mrs. Some Name",
+            "ssn_last_4": "1111",
             "stated_annual_income": 95000.0,
             "loan_amount_requested": 18000.0,
             "loan_purpose": "Home Improvement",
@@ -65,7 +65,7 @@ class TestApplicationDatabase:
 
         saved = test_app_db.save_application(app_data, actor="APPLICANT")
         assert saved["application_id"] == "APP-2026-101"
-        assert saved["applicant_name"] == "Alice Morgan"
+        assert saved["applicant_name"] == "Mrs. Some Name"
         assert saved["status"] == "NEW"
         assert saved["fcra_consent"] is True
 
@@ -73,7 +73,7 @@ class TestApplicationDatabase:
         fetched = test_app_db.get_application("app-2026-101")
         assert fetched is not None
         assert fetched["application_id"] == "APP-2026-101"
-        assert fetched["applicant_name"] == "Alice Morgan"
+        assert fetched["applicant_name"] == "Mrs. Some Name"
 
         # Not found lookup
         assert test_app_db.get_application("NON_EXISTENT") is None
@@ -81,8 +81,8 @@ class TestApplicationDatabase:
     def test_update_application_and_audit(self, test_app_db):
         app_data = {
             "application_id": "APP-2026-102",
-            "applicant_name": "Bob Vance",
-            "ssn_last_4": "3344",
+            "applicant_name": "Mr. Some Name",
+            "ssn_last_4": "2222",
             "stated_annual_income": 80000.0,
             "loan_amount_requested": 15000.0,
             "loan_purpose": "Debt Consolidation",

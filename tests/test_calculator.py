@@ -130,11 +130,11 @@ class TestDebtAndInstallmentCalculations:
 
 
 class TestMasterRatioEngineIntegration:
-    def test_compute_financial_ratios_sarah_persona(self):
-        """Sarah Jenkins: prime credit score, clean tradelines, healthy auto-approval DTI."""
-        credit = fetch_experian_credit_report("4401")
-        bank = fetch_plaid_bank_statement("4401")
-        # Sarah's prefiltered transactions categorized
+    def test_compute_financial_ratios_mrs_some_name_persona(self):
+        """Mrs. Some Name: prime credit score, clean tradelines, healthy auto-approval DTI."""
+        credit = fetch_experian_credit_report("1111")
+        bank = fetch_plaid_bank_statement("1111")
+        # Mrs. Some Name's prefiltered transactions categorized
         categorized = [
             {"category": "VERIFIED_PAYROLL_INCOME", "amount": 3800.00},
             {"category": "MATCHED_BUREAU_DEBT", "amount": -950.00},

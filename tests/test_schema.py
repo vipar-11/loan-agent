@@ -111,8 +111,8 @@ class TestLoanApplicationState:
     def test_state_typeddict_fields(self):
         state: LoanApplicationState = {
             "application_id": "APP-2026-101",
-            "applicant_name": "Sarah Jenkins",
-            "ssn_last_4": "4401",
+            "applicant_name": "Mrs. Some Name",
+            "ssn_last_4": "1111",
             "stated_annual_income": 96000.0,
             "loan_amount_requested": 15000.0,
             "loan_purpose": "Home Improvement",

@@ -46,11 +46,11 @@ class TestMainStatusRollup:
         assert main_status_for(raw) == expected
 
     def test_status_summary_endpoint(self, client):
-        for key in ("SARAH_JENKINS", "MARCUS_VANCE", "DAVID_CHEN"):
+        for key in ("MRS_SOME_NAME", "MR_SOME_NAME", "MS_SOME_NAME"):
             submit(client, key)
         client.post("/api/v1/workflows/run", params={"sync": "true"}, json={})
-        david = [a for a in client.get("/api/v1/applications", params={"status": "pending_review"}).json()][0]
-        client.post(f"/api/v1/applications/{david['application_id']}/decision", json={"decision": "DENY", "notes": "Income unverifiable."})
+        escalated = [a for a in client.get("/api/v1/applications", params={"status": "pending_review"}).json()][0]
+        client.post(f"/api/v1/applications/{escalated['application_id']}/decision", json={"decision": "DENY", "notes": "Income unverifiable."})
 
         groups = {g["status"]: g for g in client.get("/api/v1/admin/status-summary").json()}
         assert list(groups) == ["new", "pending processing", "pending review", "approved", "rejected"]
@@ -89,7 +89,7 @@ class TestSchedulerHealth:
         assert st["config"]["interval_minutes"] == 2
 
     def test_healthy_after_cli_run(self, client):
-        submit(client, "SARAH_JENKINS")
+        submit(client, "MRS_SOME_NAME")
         client.post("/api/v1/workflows/run", params={"trigger": "CLI"}, json={})
         st = client.get("/api/v1/admin/scheduler").json()
         assert st["health"] == "HEALTHY"
@@ -122,7 +122,7 @@ class TestSchedulerHealth:
 
 class TestBuiltInScheduler:
     def test_run_if_due_fires_then_waits_for_interval(self, client, test_app_db, test_checkpointer):
-        submit(client, "SARAH_JENKINS")
+        submit(client, "MRS_SOME_NAME")
         first = sched.run_if_due(test_app_db, test_checkpointer)
         assert first and first["trigger_source"] == "SCHEDULER" and first["status"] == "COMPLETED"
         assert first["approved"] == 1
@@ -136,7 +136,7 @@ class TestBuiltInScheduler:
 
     def test_disabled_scheduler_never_fires(self, client, test_app_db, test_checkpointer):
         client.put("/api/v1/admin/scheduler/config", json={"scheduler_enabled": False})
-        submit(client, "SARAH_JENKINS")
+        submit(client, "MRS_SOME_NAME")
         assert sched.run_if_due(test_app_db, test_checkpointer) is None
         assert client.get("/api/v1/admin/workflow-runs").json() == []
 

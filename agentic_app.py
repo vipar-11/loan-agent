@@ -339,10 +339,10 @@ def show_autofill_dialog():
 
     col1, col2 = st.columns(2)
     with col1:
-        st.button("Sarah Jenkins\n(Prime $15,000 → Auto-Approve)", on_click=autofill_persona_callback, args=("SARAH_JENKINS",), use_container_width=True)
-        st.button("David Chen\n(Nuanced $35,000 → Escalate)", on_click=autofill_persona_callback, args=("DAVID_CHEN",), use_container_width=True)
+        st.button("Mrs. Some Name\n(Prime $15,000 → Auto-Approve)", on_click=autofill_persona_callback, args=("MRS_SOME_NAME",), use_container_width=True)
+        st.button("Ms. Some Name\n(Nuanced $35,000 → Escalate)", on_click=autofill_persona_callback, args=("MS_SOME_NAME",), use_container_width=True)
     with col2:
-        st.button("Marcus Vance\n(Subprime $20,000 → Auto-Deny)", on_click=autofill_persona_callback, args=("MARCUS_VANCE",), use_container_width=True)
+        st.button("Mr. Some Name\n(Subprime $20,000 → Auto-Deny)", on_click=autofill_persona_callback, args=("MR_SOME_NAME",), use_container_width=True)
         st.button("Clear Form\n(Blank Slate)", on_click=clear_form_callback, use_container_width=True)
 
 
@@ -946,7 +946,7 @@ def render_adjudication_dialog(app_id: str):
         with st.form(key=f"adjudication_form_{app_id}", border=False):
             officer_name = st.text_input(
                 "Adjudicating Officer *",
-                value="James Thornton, Senior Underwriter",
+                value="Human Underwriter",
                 key=f"off_{app_id}",
             )
 
@@ -1013,7 +1013,7 @@ def render_adjudication_dialog(app_id: str):
                 app["graph_state"] = final_result
                 app["adjudication"] = {
                     "decision": final_status,
-                    "officer": officer_name.strip() or "James Thornton, Senior Underwriter",
+                    "officer": officer_name.strip() or "Human Underwriter",
                     "reason": notes_clean,
                     "adjudicated_at": timestamp_str,
                     "agent_notes": graph_state.get("underwriter_memo"),
@@ -1023,7 +1023,7 @@ def render_adjudication_dialog(app_id: str):
                 db = get_app_database()
                 db.save_application(
                     app,
-                    actor=officer_name.strip() or "James Thornton, Senior Underwriter",
+                    actor=officer_name.strip() or "Human Underwriter",
                     event_type="HUMAN_REVIEW_DECISION",
                     details=f"Human determination recorded: {final_status}. Reason: {notes_clean}",
                 )
@@ -1078,14 +1078,14 @@ if st.session_state["current_view"] == "Applicant Portal":
         inp_name = st.text_input(
             "Borrower Legal Name",
             key=f"app_name_{gen}",
-            placeholder="e.g. John Doe",
+            placeholder="e.g. Mr. Some Name",
         )
     with c2:
         inp_ssn = st.text_input(
             "SSN (Last 4)",
             key=f"app_ssn_{gen}",
             max_chars=4,
-            placeholder="e.g. 1234",
+            placeholder="e.g. 0000",
         )
     with c3:
         inc_kwargs = {} if f"app_income_{gen}" in st.session_state else {"value": None}
@@ -1283,7 +1283,7 @@ else:
                 adj = app.get("adjudication") or {}
                 dec = adj.get("decision", app.get("status", "—"))
                 officer = adj.get("officer", "AI Agent")
-                is_human = "HUMAN" in dec or "James" in officer
+                is_human = "HUMAN" in str(dec).upper() or (bool(officer) and "AI AGENT" not in str(officer).upper())
                 adjudicator_type = "👤 Human Officer" if is_human else "🤖 AI Agent"
 
                 archive_rows.append({

@@ -13,9 +13,9 @@ from loan_agent.mock_apis import (
 
 class TestApplicantProfiles:
     def test_applicant_profiles_contain_required_keys(self):
-        assert "SARAH_JENKINS" in APPLICANT_PROFILES
-        assert "MARCUS_VANCE" in APPLICANT_PROFILES
-        assert "DAVID_CHEN" in APPLICANT_PROFILES
+        assert "MRS_SOME_NAME" in APPLICANT_PROFILES
+        assert "MR_SOME_NAME" in APPLICANT_PROFILES
+        assert "MS_SOME_NAME" in APPLICANT_PROFILES
 
         required_keys = {
             "application_id",
@@ -34,9 +34,9 @@ class TestApplicantProfiles:
 
 class TestExperianCreditReportAPI:
     @pytest.mark.parametrize("ssn,expected_fico", [
-        ("4401", 745),
-        ("8829", 595),
-        ("9941", 710),
+        ("1111", 745),
+        ("2222", 595),
+        ("3333", 710),
     ])
     def test_fetch_experian_credit_report_valid(self, ssn, expected_fico):
         report = fetch_experian_credit_report(ssn)
@@ -52,9 +52,9 @@ class TestExperianCreditReportAPI:
 
 class TestPlaidBankStatementAPI:
     @pytest.mark.parametrize("ssn,expected_account", [
-        ("4401", "1104"),
-        ("8829", "7732"),
-        ("9941", "4402"),
+        ("1111", "0001"),
+        ("2222", "0002"),
+        ("3333", "0003"),
     ])
     def test_fetch_plaid_bank_statement_valid(self, ssn, expected_account):
         statement = fetch_plaid_bank_statement(ssn)
@@ -96,7 +96,7 @@ class TestPrefilterTransactions:
 
     def test_prefilter_strips_small_everyday_retail_noise(self):
         txs = [
-            {"amount": -4.50, "description": "STARBUCKS STORE 1042"},
+            {"amount": -4.50, "description": "STARBUCKS STORE 0000"},
             {"amount": -12.99, "description": "NETFLIX SUBSCRIPTION"},
             {"amount": -45.00, "description": "SHELL GAS STATION"},
         ]

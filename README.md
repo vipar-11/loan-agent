@@ -269,20 +269,20 @@ The system includes 3 pre-configured demo borrower profiles accessible via the *
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ 1. Sarah Jenkins — Clean Auto-Approve (Prime)                                │
+│ 1. Mrs. Some Name — Clean Auto-Approve (Prime)                              │
 │    • Requested: $15,000 | Stated Income: $96,000/yr ($8,000/mo)             │
 │    • FICO: 745 | Delinquencies: 0 | NSF Fees: 0                             │
 │    • Public Records: Discharged Bankruptcy from 2019 (Compliant)            │
 │    • Result: Passes all criteria, healthy DTI (< 36%), 4.2x cushion.        │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 2. Marcus Vance — Hard Knockout Denial (Subprime)                            │
+│ 2. Mr. Some Name — Hard Knockout Denial (Subprime)                          │
 │    • Requested: $20,000 | Stated Income: $60,000/yr ($5,000/mo)             │
 │    • FICO: 580 (Violates Rule 2.1 < 620)                                    │
 │    • Active Bankruptcy (Violates Rule 2.3) | 2x Delinquencies (Rule 2.3)    │
 │    • 3x NSF Events in 90 Days (Violates Rule 2.4 > 2)                       │
 │    • Result: Immediate ECOA Adverse Action Denial with specific citations.   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 3. David Chen — Manual Underwriting Escalation (Nuanced / High-Value)        │
+│ 3. Ms. Some Name — Manual Underwriting Escalation (Nuanced / High-Value)    │
 │    • Requested: $35,000 (Exceeds $25,000 Tier 1 Gate per Rule 4.2)          │
 │    • Stated Income: $110,000/yr | FICO: 710                                 │
 │    • Undisclosed BNPL detected (Klarna / Affirm payments)                   │
@@ -300,7 +300,7 @@ The system includes 3 pre-configured demo borrower profiles accessible via the *
 
 ### 1. One-Step Sandbox Setup (recommended)
 ```bash
-cd /Users/vipar/Data/projects/loan-agent
+cd /path/to/loan-agent
 source ./setup_env.sh      # creates ./venv, activates it, installs requirements.txt + requirements-dev.txt
 ```
 Options: `VENV_DIR=.venv source ./setup_env.sh` (custom location), `PYTHON=python3.12 source ./setup_env.sh` (specific interpreter). The script is idempotent — re-run it to pick up dependency changes.
@@ -346,7 +346,7 @@ Headless / scripted usage:
 ```bash
 # Submit (recorded as NEW)
 curl -X POST localhost:8000/api/v1/applications -H 'Content-Type: application/json' \
-  -d '{"applicant_name":"David Chen","ssn_last_4":"9941","stated_annual_income":110000,"loan_amount_requested":35000,"loan_purpose":"Medical Expenses","fcra_consent":true}'
+  -d '{"applicant_name":"Ms. Some Name","ssn_last_4":"3333","stated_annual_income":110000,"loan_amount_requested":35000,"loan_purpose":"Medical Expenses","fcra_consent":true}'
 
 # Run the approval workflow for all NEW files (same as: python -m initiate_workflow)
 curl -X POST localhost:8000/api/v1/workflows/run -H 'Content-Type: application/json' -d '{}'
@@ -359,17 +359,17 @@ python -m initiate_workflow           # fire-and-forget; progress on /admin or l
 
 # Adjudicate an escalated file
 curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H 'Content-Type: application/json' \
-  -d '{"decision":"APPROVE","officer":"James Thornton, Senior Underwriter","notes":"Verified W-2; bonus structure explains variance."}'
+  -d '{"decision":"APPROVE","officer":"Human Underwriter","notes":"Verified W-2; bonus structure explains variance."}'
 ```
 
 #### Recommended Agentic Walkthrough:
 1. Navigate to the **Applicant Portal** (`/portal`).
 2. Click **`⚡ Autofill Demo Persona`** and submit. The built-in schedule initiates the approval workflow within the configured interval (default 2 minutes) — or trigger it now with `python -m initiate_workflow`:
-   - **Sarah Jenkins (Prime)**: Click Submit → AI Underwriter approves automatically per Tier 1 rules → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_APPROVED`.
-   - **Marcus Vance (Subprime)**: Click Submit → AI Underwriter detects knockout criteria (FICO < 620, DTI > 45%, 4 NSF fees) → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_DENIED` and ECOA adverse action notices.
-   - **David Chen (Nuanced / High-Value)**: Click Submit → loan amount ($35,000) and income variance (>15%) trigger Section 4 escalation → graph pauses execution before `human_review_node` → appears in the **Pending Loan Review Queue**.
+   - **Mrs. Some Name (Prime)**: Click Submit → AI Underwriter approves automatically per Tier 1 rules → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_APPROVED`.
+   - **Mr. Some Name (Subprime)**: Click Submit → AI Underwriter detects knockout criteria (FICO < 620, DTI > 45%, 4 NSF fees) → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_DENIED` and ECOA adverse action notices.
+   - **Ms. Some Name (Nuanced / High-Value)**: Click Submit → loan amount ($35,000) and income variance (>15%) trigger Section 4 escalation → graph pauses execution before `human_review_node` → appears in the **Pending Loan Review Queue**.
 3. Switch to the **Underwriter Desk** (`/desk`) via the sidebar navigation.
-4. Click **Review & Adjudicate ↗** on David Chen's escalated file:
+4. Click **Review & Adjudicate ↗** on Ms. Some Name's escalated file:
    - **`🤖 AI Assessment` Tab**: Review the AI recommendation (`ESCALATE`), confidence score, detailed underwriter memorandum, policy citations, bank analyst narrative, and complete LangGraph execution trace.
    - **`💳 Bank Cash Flow` Tab**: Observe how all transactions are **auto-populated and pre-classified** by the AI Bank Statement Analyst agent.
    - **`📊 Financial Ratios` Tab**: Observe how all financial metrics (*Post-Loan DTI*, *Payment Cushion Ratio*, *Income Variance*) are **auto-populated from the graph state** without needing manual computation.
@@ -401,7 +401,7 @@ streamlit run app.py
 
 #### Recommended Manual Walkthrough:
 1. Navigate to the **Applicant Portal**.
-2. Click **`⚡ Autofill Demo Persona`** and select **Sarah Jenkins** (or Marcus Vance / David Chen).
+2. Click **`⚡ Autofill Demo Persona`** and select **Mrs. Some Name** (or Mr. Some Name / Ms. Some Name).
 3. Observe how the **Calculated Installment** updates instantly with any change to the requested loan amount.
 4. Check the FCRA authorization box and click **Submit Loan Application**.
 5. Switch to the **Underwriter Desk** via the sidebar navigation.
@@ -428,9 +428,9 @@ pytest tests/test_api.py
 pytest --cov
 
 # 3. Run live LangGraph integration tests across the 3 borrower personas:
-#    - Sarah Jenkins (AUTO_APPROVED)
-#    - Marcus Vance (AUTO_DENIED with ECOA adverse action notices)
-#    - David Chen (ESCALATE, StateGraph breakpoint pause & human review resumption)
+#    - Mrs. Some Name (AUTO_APPROVED)
+#    - Mr. Some Name (AUTO_DENIED with ECOA adverse action notices)
+#    - Ms. Some Name (ESCALATE, StateGraph breakpoint pause & human review resumption)
 pytest tests/test_integration_workflow.py
 ```
 
@@ -461,7 +461,7 @@ pytest tests/test_integration_workflow.py
 * **Why it matters here**: Lenders cannot legally inspect consumer credit reports or access bank account ledgers without a certified **Permissible Purpose** and **Explicit Consumer Consent**.
 * **Implementation in Code**:
   - In the **Applicant Portal**, the borrower must affirmatively check the FCRA/GLBA authorization checkbox before submitting.
-  - In [`loan_agent/graph_workflow.py`](file:///Users/vipar/Data/projects/loan-agent/loan_agent/graph_workflow.py), **Node 1 (`validate_consent_node`)** acts as a technical gatekeeper: if `fcra_consent is False`, execution is immediately halted before any external API (Experian/Plaid) is reached, returning `REJECT_NO_CONSENT`.
+  - In [`loan_agent/graph_workflow.py`](loan_agent/graph_workflow.py), **Node 1 (`validate_consent_node`)** acts as a technical gatekeeper: if `fcra_consent is False`, execution is immediately halted before any external API (Experian/Plaid) is reached, returning `REJECT_NO_CONSENT`.
 
 #### B. GLBA (Gramm-Leach-Bliley Act — 15 U.S.C. § 6801)
 * **What it is**: The Financial Services Modernization Act of 1999, specifically its **Financial Privacy Rule** and **Safeguards Rule**, requiring financial institutions to protect consumers' Non-Public Personal Information (NPI).
@@ -474,14 +474,14 @@ pytest tests/test_integration_workflow.py
 * **What it is**: Federal civil rights law prohibiting creditors from discriminating against credit applicants based on race, color, religion, national origin, sex, marital status, or age.
 * **Mandatory Adverse Action Requirement**: When a lender denies credit, ECOA legally mandates providing the applicant with a written **Adverse Action Notice** citing the specific, objective reasons for rejection (e.g., *FICO score below minimum threshold*, *Excessive delinquencies*, *Debt-to-Income ratio exceeds policy limit*).
 * **Implementation in Code**:
-  - The policy underwriter schema (`UnderwritingOutput` in [`schema.py`](file:///Users/vipar/Data/projects/loan-agent/loan_agent/schema.py)) enforces that whenever `underwriting_decision == "DENY"`, the agent **must populate `adverse_action_reasons`** with exact, legally compliant statements.
-  - Marcus Vance's automated denial displays these citations prominently in the audit archive.
+  - The policy underwriter schema (`UnderwritingOutput` in [`loan_agent/schema.py`](loan_agent/schema.py)) enforces that whenever `underwriting_decision == "DENY"`, the agent **must populate `adverse_action_reasons`** with exact, legally compliant statements.
+  - Mr. Some Name's automated denial displays these citations prominently in the audit archive.
 
 #### D. SR 11-7 (Supervisory Guidance on Model Risk Management)
 * **What it is**: Joint regulatory guidance issued by the Federal Reserve and OCC governing the design, implementation, and validation of automated models in banking.
 * **Core Principle**: Financial math must be **transparent, deterministic, auditable, and mathematically reproducible**. Opaque generative AI models should not perform arithmetic (which is prone to hallucinations and rounding errors).
 * **Implementation in Code**:
-  - **100% Separation of Math and Language**: All ratio formulas live in [`calculator.py`](file:///Users/vipar/Data/projects/loan-agent/loan_agent/calculator.py) as pure Python functions.
+  - **100% Separation of Math and Language**: All ratio formulas live in [`loan_agent/calculator.py`](loan_agent/calculator.py) as pure Python functions.
   - The LLM agents only classify text descriptions (e.g. tagging transaction categories); the deterministic Python math engine computes all DTIs, cushions, and variance percentages.
 
 ---
@@ -511,7 +511,7 @@ pytest tests/test_integration_workflow.py
 
 #### C. Adverse Public Records (Active vs. Discharged Bankruptcies)
 * **Active Bankruptcy**: The borrower is currently undergoing legal bankruptcy proceedings (Chapter 7 liquidation or Chapter 13 repayment). Federal banking law and Apex Policy consider an active bankruptcy a **hard knockout** because the debtor is under court supervision and cannot legally incur new unapproved debt.
-* **Discharged Bankruptcy**: The court has concluded the bankruptcy and permanently released the debtor from liability. Per Apex Policy (Rule 2.3), historical bankruptcies that have been **discharged for $\ge 5$ years** with subsequent clean credit re-establishment (e.g., Sarah Jenkins' 2018 discharge) are **permitted** and do not trigger a knockout.
+* **Discharged Bankruptcy**: The court has concluded the bankruptcy and permanently released the debtor from liability. Per Apex Policy (Rule 2.3), historical bankruptcies that have been **discharged for $\ge 5$ years** with subsequent clean credit re-establishment (e.g., Mrs. Some Name's 2018 discharge) are **permitted** and do not trigger a knockout.
 
 ---
 
@@ -535,7 +535,7 @@ pytest tests/test_integration_workflow.py
 
 ### 5. 🧮 Underwriting Financial Ratios & Exact Formulas
 
-The deterministic math engine in [`loan_agent/calculator.py`](file:///Users/vipar/Data/projects/loan-agent/loan_agent/calculator.py) computes the following core metrics:
+The deterministic math engine in [`loan_agent/calculator.py`](loan_agent/calculator.py) computes the following core metrics:
 
 #### 1. Monthly Loan Payment Sizing (Standard Fixed-Rate Amortization)
 Calculates the exact monthly installment for a fully amortizing fixed-rate personal loan:
@@ -560,7 +560,7 @@ $$\text{Income Variance \%} = \frac{|\text{Stated Monthly Income} - \text{Verifi
 * **Policy Rules**:
   - $\le 10\%$: Tier 1 Prime compliance.
   - $\le 25\%$: Acceptable near-prime variance (often explained by standard tax withholdings, 401(k), and healthcare deductions).
-  - $> 15\%$: Triggers automatic **Escalation Gate** (Rule 4.1) for human underwriter documentation verification (e.g., David Chen's 21.45% variance).
+  - $> 15\%$: Triggers automatic **Escalation Gate** (Rule 4.1) for human underwriter documentation verification (e.g., Ms. Some Name's 21.45% variance).
 
 #### 5. Total Post-Loan Monthly Debt Obligation
 Aggregates all existing and prospective monthly debt commitments:
@@ -573,9 +573,9 @@ $$\text{Total Post-Loan Debt} = \text{Bureau Monthly Debt} + \text{Undisclosed M
 The primary indicator of borrower debt capacity and leverage:
 $$\text{Post-Loan DTI \%} = \left( \frac{\text{Total Post-Loan Monthly Debt}}{\text{Verified Monthly Income}} \right) \times 100$$
 * **Policy Benchmarks**:
-  - $\le 36.00\%$: Prime Tier 1 Auto-Approval (Sarah Jenkins: ~24.98%).
-  - $36.01\% - 45.00\%$: Near-Prime / Human Escalation Tier (David Chen: ~41.84%).
-  - $> 45.00\%$: Hard Knockout Denial per Rule 2.2 (Marcus Vance: ~63.96%).
+  - $\le 36.00\%$: Prime Tier 1 Auto-Approval (Mrs. Some Name: ~24.98%).
+  - $36.01\% - 45.00\%$: Near-Prime / Human Escalation Tier (Ms. Some Name: ~41.84%).
+  - $> 45.00\%$: Hard Knockout Denial per Rule 2.2 (Mr. Some Name: ~63.96%).
 
 #### 7. Liquidity Payment Cushion Ratio (Reserve Multiple)
 Measures liquidity buffer and checking account reserve strength against the new loan payment:

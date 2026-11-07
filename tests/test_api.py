@@ -57,8 +57,8 @@ class TestReferenceEndpoints:
 
     def test_personas(self, client):
         personas = client.get("/api/v1/personas").json()
-        assert {p["key"] for p in personas} == {"SARAH_JENKINS", "MARCUS_VANCE", "DAVID_CHEN"}
-        assert personas[0]["ssn_last_4"] == "4401"
+        assert {p["key"] for p in personas} == {"MRS_SOME_NAME", "MR_SOME_NAME", "MS_SOME_NAME"}
+        assert personas[0]["ssn_last_4"] == "1111"
 
     def test_installment_quote(self, client):
         q = client.get("/api/v1/calculator/installment", params={"loan_amount": 15000}).json()
@@ -100,7 +100,7 @@ class TestReferenceEndpoints:
 # ---------------------------------------------------------------------------
 class TestApplicationSubmission:
     def test_submit_records_new_application(self, client, test_app_db):
-        res = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS"))
+        res = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME"))
         assert res.status_code == 201
         body = res.json()
         assert "workflow_scheduled" not in body
@@ -112,28 +112,28 @@ class TestApplicationSubmission:
         app = body["application"]
         assert app["status"] == "NEW" and app["stage"] == "NEW"
         assert app["application_id"].startswith("APP-")
-        assert app["ssn_masked"] == "••••-4401"
+        assert app["ssn_masked"] == "••••-1111"
         assert app["estimated_monthly_payment"] == 498.21
 
         trail = test_app_db.get_audit_trail(app["application_id"])
         assert [t["event_type"] for t in trail] == ["APPLICATION_SUBMITTED"]
 
     def test_submit_validation_errors(self, client):
-        bad = persona_payload("SARAH_JENKINS", ssn_last_4="12", loan_amount_requested=500.0)
+        bad = persona_payload("MRS_SOME_NAME", ssn_last_4="12", loan_amount_requested=500.0)
         res = client.post("/api/v1/applications", json=bad)
         assert res.status_code == 422
         fields = {e["loc"][-1] for e in res.json()["detail"]}
         assert {"ssn_last_4", "loan_amount_requested"} <= fields
 
-        res = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS", applicant_name="   "))
+        res = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME", applicant_name="   "))
         assert res.status_code == 422
 
-        res = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS", loan_purpose="Yacht"))
+        res = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME", loan_purpose="Yacht"))
         assert res.status_code == 422
 
     def test_unique_ids_and_listing_filters(self, client):
         ids = [client.post("/api/v1/applications", json=persona_payload(k)).json()["application"]["application_id"]
-               for k in ("SARAH_JENKINS", "MARCUS_VANCE", "DAVID_CHEN")]
+               for k in ("MRS_SOME_NAME", "MR_SOME_NAME", "MS_SOME_NAME")]
         assert len(set(ids)) == 3
 
         assert len(client.get("/api/v1/applications").json()) == 3
@@ -153,7 +153,7 @@ class TestApplicationSubmission:
         assert client.get("/api/v1/applications/APP-NOPE/audit-trail").status_code == 404
 
     def test_case_insensitive_lookup(self, client):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME")).json()["application"]["application_id"]
         assert client.get(f"/api/v1/applications/{app_id.lower()}").status_code == 200
 
 
@@ -163,14 +163,14 @@ class TestApplicationSubmission:
 class TestWorkflowExecution:
     def test_applicant_cannot_trigger_workflow_on_submit(self, client, test_app_db):
         """The portal only records the file; `run_workflow` is not part of the contract and is ignored."""
-        res = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS", run_workflow=True))
+        res = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME", run_workflow=True))
         assert res.status_code == 201
         app_id = res.json()["application"]["application_id"]
         assert test_app_db.get_application(app_id)["status"] == "NEW"
         assert [t["event_type"] for t in test_app_db.get_audit_trail(app_id)] == ["APPLICATION_SUBMITTED"]
 
     def test_sync_run_auto_approves_prime(self, client, test_app_db):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME")).json()["application"]["application_id"]
         res = client.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"})
         assert res.status_code == 202
         assert res.json()["status"] == "AUTO_APPROVED"
@@ -185,7 +185,7 @@ class TestWorkflowExecution:
         assert events == ["APPLICATION_SUBMITTED", "WORKFLOW_INITIATED", "WORKFLOW_APPROVED"]
 
     def test_sync_run_auto_denies_subprime_with_adverse_action(self, client):
-        app_id = client.post("/api/v1/applications", json=persona_payload("MARCUS_VANCE")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MR_SOME_NAME")).json()["application"]["application_id"]
         res = client.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"})
         assert res.status_code == 202
         assert res.json()["status"] == "AUTO_DENIED"
@@ -195,21 +195,21 @@ class TestWorkflowExecution:
         assert final["adjudication"]["adverse_action_reasons"]
 
     def test_no_consent_rejected_without_external_calls(self, client):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS", fcra_consent=False)).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME", fcra_consent=False)).json()["application"]["application_id"]
         res = client.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"}).json()
         assert res["status"] == "REJECTED_NO_CONSENT"
         detail = client.get(f"/api/v1/applications/{app_id}").json()
         assert detail["graph_state"].get("credit_report") is None
 
     def test_dispatch_guard_rejects_non_new(self, client):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME")).json()["application"]["application_id"]
         assert client.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"}).status_code == 202
         # Already adjudicated -> 409
         assert client.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"}).status_code == 409
         assert client.post("/api/v1/applications/APP-NOPE/workflow").status_code == 404
 
     def test_background_dispatch_marks_processing_then_settles(self, client, test_app_db):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME")).json()["application"]["application_id"]
         res = client.post(f"/api/v1/applications/{app_id}/workflow")
         assert res.status_code == 202
         assert res.json()["scheduled"] is True
@@ -219,7 +219,7 @@ class TestWorkflowExecution:
         assert events == ["APPLICATION_SUBMITTED", "WORKFLOW_SCHEDULED", "WORKFLOW_INITIATED", "WORKFLOW_APPROVED"]
 
     def test_batch_run_processes_all_new(self, client):
-        for k in ("SARAH_JENKINS", "MARCUS_VANCE", "DAVID_CHEN"):
+        for k in ("MRS_SOME_NAME", "MR_SOME_NAME", "MS_SOME_NAME"):
             client.post("/api/v1/applications", json=persona_payload(k))
 
         dry = client.post("/api/v1/workflows/run", json={"dry_run": True}).json()
@@ -236,7 +236,7 @@ class TestWorkflowExecution:
         assert (stats["new"], stats["pending_review"], stats["adjudicated"], stats["total"]) == (0, 1, 2, 3)
 
     def test_batch_run_is_fire_and_forget_by_default(self, client):
-        client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS"))
+        client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME"))
         res = client.post("/api/v1/workflows/run", params={"trigger": "cli"}, json={})
         assert res.status_code == 202
         body = res.json()
@@ -249,7 +249,7 @@ class TestWorkflowExecution:
         assert client.get("/api/v1/workflows/runs/999").status_code == 404
 
     def test_dry_run_is_not_logged(self, client):
-        client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS"))
+        client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME"))
         client.post("/api/v1/workflows/run", json={"dry_run": True})
         assert client.get("/api/v1/admin/workflow-runs").json() == []
 
@@ -259,7 +259,7 @@ class TestWorkflowExecution:
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def escalated_app_id(client) -> str:
-    app_id = client.post("/api/v1/applications", json=persona_payload("DAVID_CHEN")).json()["application"]["application_id"]
+    app_id = client.post("/api/v1/applications", json=persona_payload("MS_SOME_NAME")).json()["application"]["application_id"]
     res = client.post(f"/api/v1/applications/{app_id}/workflow", params={"sync": "true"}).json()
     assert res["status"] == "PENDING_REVIEW"
     return app_id
@@ -295,7 +295,7 @@ class TestHumanInTheLoop:
         assert len(ratios["rows"]) == 13
 
     def test_dossier_for_unprocessed_application_falls_back_to_heuristics(self, client):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME")).json()["application"]["application_id"]
         d = client.get(f"/api/v1/applications/{app_id}/dossier").json()
         assert d["bank"]["classified_by_ai"] is False
         assert d["credit"]["fico_score"] == 745
@@ -327,14 +327,14 @@ class TestHumanInTheLoop:
         assert labels and all(v != "— Select Classification —" for v in labels.values())
 
     def test_human_approval_resumes_graph(self, client, escalated_app_id, test_app_db):
-        payload = {"decision": "APPROVE", "officer": "Jane Doe, Credit Committee", "notes": "Verified W-2; bonus structure explains variance."}
+        payload = {"decision": "APPROVE", "officer": "Human Underwriter, Credit Committee", "notes": "Verified W-2; bonus structure explains variance."}
         res = client.post(f"/api/v1/applications/{escalated_app_id}/decision", json=payload)
         assert res.status_code == 200
         body = res.json()
         assert body["status"] == "HUMAN_APPROVED"
         assert body["stage"] == "ADJUDICATED"
         assert body["adjudicator_type"] == "HUMAN_OFFICER"
-        assert body["adjudication"]["officer"] == "Jane Doe, Credit Committee"
+        assert body["adjudication"]["officer"] == "Human Underwriter, Credit Committee"
         assert body["adjudication"]["reason"] == payload["notes"]
         assert body["graph_state"]["human_reviewer_decision"] == "APPROVE"
         assert any("Human Underwriter Override" in line for line in body["graph_state"]["execution_log"])
@@ -355,7 +355,7 @@ class TestHumanInTheLoop:
         assert client.get(f"/api/v1/applications/{escalated_app_id}").json()["status"] == "PENDING_REVIEW"
 
     def test_decision_rejected_when_not_pending_review(self, client):
-        app_id = client.post("/api/v1/applications", json=persona_payload("SARAH_JENKINS")).json()["application"]["application_id"]
+        app_id = client.post("/api/v1/applications", json=persona_payload("MRS_SOME_NAME")).json()["application"]["application_id"]
         res = client.post(f"/api/v1/applications/{app_id}/decision", json={"decision": "APPROVE", "notes": "ok"})
         assert res.status_code == 409
         assert client.post("/api/v1/applications/APP-NOPE/decision", json={"decision": "APPROVE", "notes": "ok"}).status_code == 404

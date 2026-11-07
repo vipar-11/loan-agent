@@ -64,7 +64,7 @@ class TestConsentGatekeeperNode:
 
 class TestExternalDataHarvesters:
     def test_pull_credit_bureau_node_success(self):
-        state: LoanApplicationState = {"ssn_last_4": "4401"}
+        state: LoanApplicationState = {"ssn_last_4": "1111"}
         res = pull_credit_bureau_node(state)
         assert "credit_report" in res
         assert res["credit_report"]["fico_score"] == 745
@@ -77,7 +77,7 @@ class TestExternalDataHarvesters:
         assert "Credit Bureau API Error" in res["error_message"]
 
     def test_pull_raw_bank_transactions_node_success(self):
-        state: LoanApplicationState = {"ssn_last_4": "4401"}
+        state: LoanApplicationState = {"ssn_last_4": "1111"}
         res = pull_raw_bank_transactions_node(state)
         assert "bank_statement_raw" in res
         assert "prefiltered_transactions" in res
@@ -151,7 +151,7 @@ class TestGraphCompilationAndExecution:
         initial_state: LoanApplicationState = {
             "application_id": "APP-TEST-999",
             "applicant_name": "Test Borrower",
-            "ssn_last_4": "4401",
+            "ssn_last_4": "1111",
             "stated_annual_income": 80000.0,
             "loan_amount_requested": 10000.0,
             "loan_purpose": "Home Improvement",

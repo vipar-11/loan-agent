@@ -33,14 +33,14 @@ class TestInitiateWorkflow:
 
     def test_run_initiate_workflow_dry_run(self, test_app_db, test_checkpointer):
         # Seed applications
-        sarah = APPLICANT_PROFILES["SARAH_JENKINS"]
+        p1 = APPLICANT_PROFILES["MRS_SOME_NAME"]
         test_app_db.save_application({
-            "application_id": sarah["application_id"],
-            "applicant_name": sarah["applicant_name"],
-            "ssn_last_4": sarah["ssn_last_4"],
-            "stated_annual_income": float(sarah["stated_annual_income"]),
-            "loan_amount_requested": float(sarah["loan_amount_requested"]),
-            "loan_purpose": sarah["loan_purpose"],
+            "application_id": p1["application_id"],
+            "applicant_name": p1["applicant_name"],
+            "ssn_last_4": p1["ssn_last_4"],
+            "stated_annual_income": float(p1["stated_annual_income"]),
+            "loan_amount_requested": float(p1["loan_amount_requested"]),
+            "loan_purpose": p1["loan_purpose"],
             "fcra_consent": True,
             "status": "NEW",
         })
@@ -55,16 +55,16 @@ class TestInitiateWorkflow:
         assert summary["dry_run"] is True
 
         # Database record must still be in NEW status
-        app = test_app_db.get_application(sarah["application_id"])
+        app = test_app_db.get_application(p1["application_id"])
         assert app["status"] == "NEW"
 
     def test_run_initiate_workflow_limit_and_execution(self, test_app_db, test_checkpointer):
         # Seed 3 applicant personas
-        sarah = APPLICANT_PROFILES["SARAH_JENKINS"]
-        marcus = APPLICANT_PROFILES["MARCUS_VANCE"]
-        david = APPLICANT_PROFILES["DAVID_CHEN"]
+        p1 = APPLICANT_PROFILES["MRS_SOME_NAME"]
+        p2 = APPLICANT_PROFILES["MR_SOME_NAME"]
+        p3 = APPLICANT_PROFILES["MS_SOME_NAME"]
 
-        for idx, p in enumerate([sarah, marcus, david], 1):
+        for idx, p in enumerate([p1, p2, p3], 1):
             test_app_db.save_application({
                 "application_id": p["application_id"],
                 "applicant_name": p["applicant_name"],
@@ -77,7 +77,7 @@ class TestInitiateWorkflow:
                 "submitted_at": f"2026-10-30 10:0{idx}:00",
             })
 
-        # Test with limit=2 (should process oldest 2: sarah and marcus)
+        # Test with limit=2 (should process oldest 2: Mrs. Some Name and Mr. Some Name)
         summary = run_initiate_workflow(
             limit=2,
             app_db=test_app_db,
@@ -89,20 +89,20 @@ class TestInitiateWorkflow:
         assert summary["approved"] == 1
         assert summary["rejected"] == 1
 
-        # Sarah should be AUTO_APPROVED
-        s_app = test_app_db.get_application(sarah["application_id"])
+        # Mrs. Some Name should be AUTO_APPROVED
+        s_app = test_app_db.get_application(p1["application_id"])
         assert s_app["status"] == "AUTO_APPROVED"
         assert s_app["adjudication"] is not None
 
-        # Marcus should be AUTO_DENIED
-        m_app = test_app_db.get_application(marcus["application_id"])
+        # Mr. Some Name should be AUTO_DENIED
+        m_app = test_app_db.get_application(p2["application_id"])
         assert m_app["status"] == "AUTO_DENIED"
 
-        # David was not processed due to limit=2, so should still be NEW
-        d_app = test_app_db.get_application(david["application_id"])
+        # Ms. Some Name was not processed due to limit=2, so should still be NEW
+        d_app = test_app_db.get_application(p3["application_id"])
         assert d_app["status"] == "NEW"
 
-        # Now run again for remaining (David -> ESCALATE -> PENDING_REVIEW)
+        # Now run again for remaining (Ms. Some Name -> ESCALATE -> PENDING_REVIEW)
         summary2 = run_initiate_workflow(
             app_db=test_app_db,
             checkpointer=test_checkpointer,
@@ -110,11 +110,11 @@ class TestInitiateWorkflow:
         assert summary2["found"] == 1
         assert summary2["escalated"] == 1
 
-        d_app2 = test_app_db.get_application(david["application_id"])
+        d_app2 = test_app_db.get_application(p3["application_id"])
         assert d_app2["status"] == "PENDING_REVIEW"
 
         # Verify audit trails
-        trail = test_app_db.get_audit_trail(sarah["application_id"])
+        trail = test_app_db.get_audit_trail(p1["application_id"])
         event_types = [t["event_type"] for t in trail]
         assert "WORKFLOW_INITIATED" in event_types
         assert "WORKFLOW_APPROVED" in event_types
