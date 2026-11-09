@@ -114,7 +114,7 @@ class TestFileParsing:
     @pytest.mark.parametrize("content,fragment", [
         (b"", "File is empty"),
         (HEADER.encode(), "no application rows"),
-        (b"partner_reference,applicant_name\nR1,Jane\n", "missing column(s): ssn_last_4"),
+        (b"partner_reference,applicant_name\nR1,Some Name\n", "missing column(s): ssn_last_4"),
         ((HEADER + ",notes\n" + row() + ",x\n").encode(), "unknown column(s): 'notes'"),
         ((HEADER + ",fcra_consent\n").encode(), "duplicate column(s): fcra_consent"),
         ("partner_reference\n\xe9".encode("latin-1"), "not valid UTF-8"),
@@ -193,7 +193,7 @@ class TestProcessing:
         assert "Ms. Some Name" not in text and "96000" not in text
 
     def test_rejected_file_submits_nothing(self, cfg, test_app_db):
-        drop(cfg, "bad_header.csv", "ref,name\nR1,Jane\n")
+        drop(cfg, "bad_header.csv", "ref,name\nR1,Some Name\n")
         [batch] = intake.scan_inbox(test_app_db, cfg)
         assert batch["status"] == "REJECTED" and "missing column(s)" in batch["error_message"]
         assert Path(batch["stored_path"]).parent == cfg.rejected_dir / PARTNER

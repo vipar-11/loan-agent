@@ -174,7 +174,7 @@
     return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
   }
 
-  /** "Session 3F9A1C02" -> "3F" today; "Jane Doe" (a future authenticated name) -> "JD". */
+  /** "Session 3F9A1C02" -> "3F" today; "Some Name" (a future authenticated name) -> "SN". */
   function initialsFor(displayName) {
     const anon = /^Session ([0-9A-F]+)$/i.exec(displayName || '');
     if (anon) return anon[1].slice(0, 2).toUpperCase();
