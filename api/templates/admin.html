@@ -38,6 +38,7 @@
   <button class="tab-btn active" data-tab="status">📊 Applications by Status</button>
   <button class="tab-btn" data-tab="scheduler">⏱ Workflow Job Monitor</button>
   <button class="tab-btn" data-tab="config">⚙️ Job Frequency Configuration</button>
+  <button class="tab-btn" data-tab="intake">📥 Partner Batch Intake</button>
 </div>
 
 <!-- TAB: STATUS MONITOR -->
@@ -86,6 +87,23 @@
       </div>
     </form>
   </div>
+</section>
+
+<!-- TAB: PARTNER BATCH INTAKE -->
+<section class="tab-panel" data-scope="admin" data-panel="intake">
+  <div class="toolbar">
+    <div class="card-sub" id="intake-refreshed-at">—</div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-sm btn-primary" id="btn-intake-scan" title="Process files waiting in the partner inboxes now">📥 Scan Inboxes Now</button>
+      <button class="btn btn-sm" data-refresh="intake">🔄 Refresh</button>
+    </div>
+  </div>
+  <div id="intake-health"></div>
+  <div class="section-label" style="margin-top:14px;">Approved Partners</div>
+  <div id="intake-partners"></div>
+  <div class="section-label" style="margin-top:14px;">Recent Batch Files — select a file to see its rows</div>
+  <div id="intake-batches"></div>
+  <div id="intake-batch-detail" style="margin-top:12px;"></div>
 </section>
 {% endblock %}
 

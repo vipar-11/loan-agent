@@ -1,0 +1,17 @@
+partner_reference,applicant_name,ssn_last_4,stated_annual_income,loan_amount_requested,loan_purpose,fcra_consent
+DEMO-001,Valid Applicant,1111,96000.00,15000.00,Home Improvement,Y
+DEMO-002,,2222,60000,20000,Debt Consolidation,Y
+DEMO-003,Short Ssn,123,60000,20000,Debt Consolidation,Y
+DEMO-004,Dollar Income,3333,"$85,000",20000,Business,Y
+DEMO-005,Too Small,3333,85000,500,Business,Y
+DEMO-006,Too Big,3333,85000,60000,Business,Y
+DEMO-007,Bad Purpose,1111,85000,10000,Vacation,Y
+DEMO-008,Bad Consent,1111,85000,10000,Other,maybe
+DEMO-009,Missing Consent,1111,85000,10000,Other,
+DEMO-010,Duplicate One,1111,85000,10000,Other,Y
+DEMO-010,Duplicate Two,2222,85000,10000,Other,Y
+,No Reference,1111,85000,10000,Other,Y
+DEMO-013,Extra Field,1111,85000,10000,Other,Y,EXTRA
+DEMO 014,Bad Ref,1111,85000,10000,Other,Y
+DEMO-015,"Some Name, Jr.",2222,72000.5,8000,debt consolidation,n
+DEMO-016,Multiple Problems,12345,-5,abc,Travel,X

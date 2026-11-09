@@ -2,28 +2,35 @@
 /api/v1/applications — loan application resource.
 
 Submission, queue listing, detail, audit trail, review dossier, ratio recalculation,
-pipeline dispatch, and human-in-the-loop determination.
+pipeline dispatch, review checkout (one identity per file), and human-in-the-loop determination.
+
+The caller's identity comes from `establish_user_identity()` (today: one anonymous session per browser tab, carried
+in the X-Apex-Session-Id header).
 """
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
-from api.dependencies import get_checkpointer, get_db
+from api.dependencies import establish_user_identity, get_checkpointer, get_db
 from api.schemas import (
     ApplicationCreate,
     ApplicationCreateResponse,
     ApplicationDetail,
     ApplicationSummary,
     AuditEvent,
+    CheckoutInfo,
+    CheckoutReleaseResponse,
     Dossier,
     HumanDecisionRequest,
     Message,
     RatioRecalculateRequest,
     RatiosResponse,
+    UserIdentity,
     WorkflowItem,
     WorkflowScheduledResponse,
 )
 from api.services import applications as app_service
+from api.services import checkout as checkout_service
 from api.services import dossier as dossier_service
 from api.services import workflows as workflow_service
 from loan_agent.db import ApplicationDatabase
@@ -73,14 +80,24 @@ def list_applications(
         description="new | processing | pending_review | adjudicated | approved | rejected | all (default)",
     ),
     db: ApplicationDatabase = Depends(get_db),
+    identity: UserIdentity = Depends(establish_user_identity),
 ) -> List[ApplicationSummary]:
-    return [app_service.to_summary(a) for a in app_service.list_applications(db, status_filter)]
+    checkouts = checkout_service.active_checkouts(db, viewer=identity)
+    return [
+        app_service.to_summary(a, checkouts.get(a["application_id"]))
+        for a in app_service.list_applications(db, status_filter)
+    ]
 
 
 @router.get("/{application_id}", response_model=ApplicationDetail, responses={404: {"model": Message}})
-def get_application(application_id: str, db: ApplicationDatabase = Depends(get_db)) -> ApplicationDetail:
-    """Full record including the persisted workflow state and adjudication."""
-    return app_service.to_detail(_get_or_404(db, application_id))
+def get_application(
+    application_id: str,
+    db: ApplicationDatabase = Depends(get_db),
+    identity: UserIdentity = Depends(establish_user_identity),
+) -> ApplicationDetail:
+    """Full record including the persisted workflow state, adjudication and active review checkout."""
+    record = _get_or_404(db, application_id)
+    return app_service.to_detail(record, checkout_service.active_checkout(db, record["application_id"], viewer=identity))
 
 
 @router.get("/{application_id}/audit-trail", response_model=List[AuditEvent], responses={404: {"model": Message}})
@@ -156,6 +173,79 @@ def run_workflow(
 
 
 @router.post(
+    "/{application_id}/checkout",
+    response_model=CheckoutInfo,
+    responses={404: {"model": Message}, 409: {"model": Message}},
+    summary="Check out a PENDING_REVIEW file for review by the calling identity",
+)
+def checkout_application(
+    application_id: str,
+    db: ApplicationDatabase = Depends(get_db),
+    identity: UserIdentity = Depends(establish_user_identity),
+) -> CheckoutInfo:
+    """
+    Opens the file for the calling identity only (today: the browser tab's session). Every other identity — another
+    reviewer or another tab — gets **409** until the holder closes it or the lease (`ttl_seconds`) lapses. While the
+    review stays open, the holder renews the lease every `heartbeat_seconds` via `POST /{id}/checkout/renew`.
+    Re-opening a file you already hold is allowed.
+    """
+    try:
+        return checkout_service.checkout(db, application_id, identity)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc).strip("'\"")) from exc
+    except (ValueError, checkout_service.CheckoutConflict) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{application_id}/checkout/renew",
+    response_model=CheckoutInfo,
+    responses={404: {"model": Message}, 409: {"model": Message}},
+    summary="Heartbeat: extend the lease of a checkout you hold",
+)
+def renew_checkout(
+    application_id: str,
+    db: ApplicationDatabase = Depends(get_db),
+    identity: UserIdentity = Depends(establish_user_identity),
+) -> CheckoutInfo:
+    """**409** when the caller no longer holds the file (force-released, or lapsed and taken by someone else)."""
+    try:
+        return checkout_service.renew(db, application_id, identity)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc).strip("'\"")) from exc
+    except checkout_service.CheckoutConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.delete(
+    "/{application_id}/checkout",
+    response_model=CheckoutReleaseResponse,
+    responses={404: {"model": Message}},
+    summary="Release a review checkout",
+)
+def release_checkout(
+    application_id: str,
+    force: bool = Query(False, description="Administrator override: release regardless of the holder."),
+    actor: Optional[str] = Query(None, max_length=120, description="Who forced the release (audit trail)."),
+    db: ApplicationDatabase = Depends(get_db),
+    identity: UserIdentity = Depends(establish_user_identity),
+) -> CheckoutReleaseResponse:
+    """
+    Releases the caller's own checkout. Idempotent: releasing a checkout you do not hold (or that no longer exists)
+    is a no-op. `force=true` is an administrator override (audited).
+    """
+    try:
+        released = checkout_service.release(db, application_id, identity, force=force, actor=actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc).strip("'\"")) from exc
+    return CheckoutReleaseResponse(
+        application_id=application_id,
+        released=released,
+        message="Checkout released." if released else "No checkout held by this session; nothing to release.",
+    )
+
+
+@router.post(
     "/{application_id}/decision",
     response_model=ApplicationDetail,
     responses={404: {"model": Message}, 409: {"model": Message}},
@@ -166,16 +256,20 @@ def record_decision(
     payload: HumanDecisionRequest,
     db: ApplicationDatabase = Depends(get_db),
     checkpointer: Any = Depends(get_checkpointer),
+    identity: UserIdentity = Depends(establish_user_identity),
 ) -> ApplicationDetail:
     """
     Human-in-the-loop resumption: injects the determination into the paused workflow and resumes it,
     finalizing the file as **HUMAN_APPROVED** or **HUMAN_DENIED**.
+
+    The calling identity must hold the file's checkout (one is taken implicitly when nobody holds it);
+    **409** if another identity has the file checked out. The checkout is released once the decision is recorded.
     """
     _get_or_404(db, application_id)
     try:
-        record = workflow_service.record_human_decision(application_id, payload, db, checkpointer)
+        record = workflow_service.record_human_decision(application_id, payload, db, checkpointer, identity)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, checkout_service.CheckoutConflict) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return app_service.to_detail(record)

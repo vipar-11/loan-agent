@@ -8,6 +8,30 @@
   <link rel="stylesheet" href="/static/css/apex.css" />
 </head>
 <body>
+<!--
+  Profile menu — fixed to the top-right corner of the page on every screen, independent of page content.
+  Today: this browser tab's anonymous session (establish_user_identity() in api/dependencies.py), rendered like a
+  standard post-login account icon so the visual slot is already in place for a future sign-in / sign-out menu.
+-->
+<div class="profile-menu" id="profile-menu">
+  <button type="button" class="profile-avatar" id="session-badge" aria-haspopup="true" aria-expanded="false"
+          title="Your session in this browser tab">
+    <span id="session-initials">··</span>
+  </button>
+  <div class="profile-dropdown" id="profile-dropdown" role="menu" aria-hidden="true">
+    <div class="profile-dropdown-caption">This browser tab</div>
+    <div class="profile-dropdown-name" id="session-label">Establishing…</div>
+    <div class="profile-dropdown-note">
+      Anonymous session — no sign-in yet. Items you open for review are checked out to this tab only; another tab
+      or user cannot open them until you close them.
+    </div>
+    <hr />
+    <button type="button" class="profile-dropdown-item" disabled
+            title="Placeholder for the future authentication module: this will replace the anonymous session.">
+      🔒 Sign in (coming soon)
+    </button>
+  </div>
+</div>
 <div class="app-shell">
   <aside class="sidebar">
     <div class="section-label">Navigation</div>

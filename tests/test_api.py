@@ -364,3 +364,108 @@ class TestHumanInTheLoop:
         client.post(f"/api/v1/applications/{escalated_app_id}/decision", json={"decision": "APPROVE", "notes": "first"})
         second = client.post(f"/api/v1/applications/{escalated_app_id}/decision", json={"decision": "DENY", "notes": "second"})
         assert second.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: the underwriter must never wait on the periodic initiate_workflow job
+# ---------------------------------------------------------------------------
+class TestDecisionConcurrency:
+    def test_decision_not_blocked_by_in_progress_workflow_run(
+        self, client, escalated_app_id, test_app_db, test_checkpointer, monkeypatch
+    ):
+        """
+        Regression: Approve/Reject used to hang until the whole initiate_workflow batch finished, because
+        the HitL decision waited on the same global lock the batch held for its entire duration.
+        """
+        import threading
+        from langchain_core.runnables import RunnableLambda
+
+        from tests import conftest
+        from api.dependencies import PIPELINE_LOCK
+        from api.services import scheduler as scheduler_service
+
+        llm_entered, release_llm = threading.Event(), threading.Event()
+
+        class BlockingLLM(conftest.TestMockLLM):
+            """Simulates a slow LLM call inside the batch: parks until the test releases it."""
+            def with_structured_output(self, schema):
+                inner = super().with_structured_output(schema)
+
+                def _call(x):
+                    llm_entered.set()
+                    release_llm.wait(timeout=30)
+                    return inner.invoke(x)
+                return RunnableLambda(_call)
+
+        monkeypatch.setattr("loan_agent.graph_workflow.get_llm", lambda *a, **kw: BlockingLLM())
+
+        client.post("/api/v1/applications", json=persona_payload("MS_SOME_NAME"))  # queued NEW file
+        run = scheduler_service.request_run(test_app_db, trigger_source="SCHEDULER")
+        batch = threading.Thread(
+            target=scheduler_service.execute_run, args=(test_app_db, test_checkpointer, run["id"]), daemon=True
+        )
+        batch.start()
+        try:
+            assert llm_entered.wait(timeout=10), "batch never reached the LLM"
+            assert PIPELINE_LOCK.locked()
+            assert test_app_db.get_workflow_run(run["id"])["status"] == "RUNNING"
+
+            result: dict = {}
+
+            def decide():
+                result["res"] = client.post(
+                    f"/api/v1/applications/{escalated_app_id}/decision",
+                    json={"decision": "APPROVE", "notes": "Verified W-2 during batch."},
+                )
+
+            officer = threading.Thread(target=decide, daemon=True)
+            officer.start()
+            officer.join(timeout=10)
+            assert not officer.is_alive(), "decision blocked behind the in-progress initiate_workflow run"
+            assert result["res"].status_code == 200
+            assert result["res"].json()["status"] == "HUMAN_APPROVED"
+            assert test_app_db.get_workflow_run(run["id"])["status"] == "RUNNING"  # batch still in flight
+        finally:
+            release_llm.set()
+            batch.join(timeout=30)
+
+        finished = test_app_db.get_workflow_run(run["id"])
+        assert finished["status"] == "COMPLETED" and finished["errors"] == 0 and finished["selected"] == 1
+        assert test_app_db.get_application(escalated_app_id)["status"] == "HUMAN_APPROVED"
+
+    def test_concurrent_decisions_on_same_file_only_one_wins(self, client, escalated_app_id, monkeypatch):
+        """Same tab submitting twice at once (double-click): the checkout claim lets only one through."""
+        import threading
+        import time
+
+        from api.services import workflows as workflow_service
+
+        original = workflow_service.resume_with_human_decision
+
+        def slow_resume(*args, **kwargs):
+            time.sleep(0.3)  # widen the check-then-act window
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(workflow_service, "resume_with_human_decision", slow_resume)
+
+        codes: list = []
+        barrier = threading.Barrier(2)
+        tab = {"X-Apex-Session-Id": client.get("/api/v1/session").headers["X-Apex-Session-Id"]}  # same browser tab
+
+        def decide(decision, app_id):
+            barrier.wait()
+            codes.append(client.post(
+                f"/api/v1/applications/{app_id}/decision", headers=tab, json={"decision": decision, "notes": decision}
+            ).status_code)
+
+        threads = [
+            threading.Thread(target=decide, args=("APPROVE", escalated_app_id)),
+            threading.Thread(target=decide, args=("DENY", escalated_app_id.lower())),  # IDs are case-insensitive
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert sorted(codes) == [200, 409]
+        trail = client.get(f"/api/v1/applications/{escalated_app_id}/audit-trail").json()
+        assert [e["event_type"] for e in trail].count("HUMAN_REVIEW_DECISION") == 1

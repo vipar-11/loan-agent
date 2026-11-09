@@ -226,3 +226,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Partner batch intake working folders (contain borrower PII)
+data/intake/

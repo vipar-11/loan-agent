@@ -5,6 +5,8 @@
 #   1. Creates a Python virtual environment (./venv by default)
 #   2. Activates it
 #   3. Installs requirements.txt and requirements-dev.txt
+#   4. Prepares the partner batch-intake folders (inbox/outbox/...) for every partner approved
+#      in batch_intake.ini
 #
 # Usage (recommended — keeps the venv active in your current shell):
 #   source ./setup_env.sh
@@ -67,6 +69,29 @@ python -m pip install -r "$PROJECT_ROOT/requirements.txt" || _apex_fail "Failed 
 echo "▶ Installing requirements-dev.txt..."
 python -m pip install -r "$PROJECT_ROOT/requirements-dev.txt" || _apex_fail "Failed installing requirements-dev.txt." || return 1
 
+# 4. Prepare the partner batch-intake folders (inbox/processing/archive/rejected/outbox), with an inbox and
+#    outbox for every partner approved in batch_intake.ini ([approved_partners]) — so the folders the monitor
+#    (and whatever FTP server is pointed at the inbox folders) expects are there from the very first run.
+#    Re-running this is safe: existing folders and files are left untouched.
+echo "▶ Preparing partner batch-intake folders (batch_intake.ini)..."
+( cd "$PROJECT_ROOT" && python -c "
+from loan_agent.config import load_intake_config
+from api.services.batch_intake import ensure_folders
+
+cfg = load_intake_config()
+ensure_folders(cfg)
+print(f'   Root          : {cfg.root_dir.resolve()}')
+print(f'   Monitor       : {\"enabled\" if cfg.enabled else \"disabled\"}, every {cfg.poll_seconds:g}s')
+if cfg.approved_partners:
+    print('   Partners      :')
+    for partner_id, name in sorted(cfg.approved_partners.items()):
+        print(f'     {partner_id:<20} {name}')
+        print(f'       inbox  : {(cfg.inbox_dir / partner_id).resolve()}   (point the partner\'s FTP account here)')
+        print(f'       outbox : {(cfg.outbox_dir / partner_id).resolve()}   (results files for the partner to collect)')
+else:
+    print('   ⚠️  No approved partners configured — add them under [approved_partners] in batch_intake.ini.')
+" ) || _apex_fail "Failed to prepare batch-intake folders (is batch_intake.ini present and valid?)." || return 1
+
 echo
 echo "✅ Sandbox ready."
 echo "   Python : $(python --version 2>&1) at $(command -v python)"
@@ -77,6 +102,7 @@ echo "     python run_api.py --reload      # FastAPI agentic service  -> http://
 echo "     streamlit run agentic_app.py    # Streamlit agentic workbench (legacy, co-existing)"
 echo "     streamlit run app.py            # Streamlit manual workbench"
 echo "     pytest -m \"not integration\"     # test suite"
+echo "     edit batch_intake.ini           # add/remove approved partners, then re-run this script"
 if [ "$_apex_sourced" -eq 0 ]; then
   echo
   echo "   ℹ️  You executed this script, so the venv is active only inside it."

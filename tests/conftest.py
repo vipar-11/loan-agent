@@ -153,11 +153,13 @@ class TestMockLLM:
 
 
 @pytest.fixture(autouse=True)
-def isolate_test_environment(monkeypatch) -> Generator[None, None, None]:
+def isolate_test_environment(monkeypatch, tmp_path) -> Generator[None, None, None]:
     """
     Guarantees that test cases run completely isolated from real local or remote databases,
     using in-memory SQLite (:memory:) by default, and without exercising live LLMs unless explicitly specified.
+    Any partner batch-intake monitor started by a test works on a per-test temporary folder, never data/intake.
     """
+    monkeypatch.setenv("BATCH_INTAKE_ROOT", str(tmp_path / "intake"))
     import loan_agent.db as db_mod
     import loan_agent.checkpointer as cp_mod
 

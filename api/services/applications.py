@@ -4,9 +4,16 @@ Application lifecycle services: submission, identifiers, listing, projections, q
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from api.schemas import ApplicationCreate, ApplicationDetail, ApplicationSummary, QueueStats, StatusGroup
+from api.schemas import (
+    ApplicationCreate,
+    ApplicationDetail,
+    ApplicationSummary,
+    CheckoutInfo,
+    QueueStats,
+    StatusGroup,
+)
 from loan_agent.calculator import calculate_monthly_installment
-from loan_agent.db import ApplicationDatabase
+from loan_agent.db import ApplicationDatabase, ApplicationIdConflict
 
 # Status vocabulary ---------------------------------------------------------
 NEW_STATUSES = {"NEW"}
@@ -37,20 +44,35 @@ def mask_ssn(ssn_last_4: Any) -> str:
     return f"••••-{ssn_last_4}"
 
 
-def generate_unique_app_id(db: ApplicationDatabase) -> str:
-    """Sequential, collision-safe reference ID: APP-<YYYY>-<NNN>[-<HHMMSS>]."""
-    year = datetime.now().strftime("%Y")
+def generate_unique_app_id(db: ApplicationDatabase, attempt: int = 0) -> str:
+    """
+    Sequential reference ID: APP-<YYYY>-<NNN>, with a -<HHMMSS>[-<n>] suffix when that number is already taken.
+    Uniqueness is guaranteed by create_application(), which inserts without overwriting and retries on conflict.
+    """
+    now = datetime.now()
     count = db.count_applications() + 1
-    candidate = f"APP-{year}-{count:03d}"
-    if db.get_application(candidate):
-        candidate = f"{candidate}-{datetime.now().strftime('%H%M%S')}"
-    return candidate
+    candidate = f"APP-{now.strftime('%Y')}-{count:03d}"
+    if attempt == 0 and not db.get_application(candidate):
+        return candidate
+    candidate = f"{candidate}-{now.strftime('%H%M%S')}"
+    return candidate if attempt <= 1 else f"{candidate}-{attempt}"
 
 
-def create_application(db: ApplicationDatabase, payload: ApplicationCreate) -> Dict[str, Any]:
-    """Persists a NEW application record and writes the APPLICATION_SUBMITTED audit event."""
+MAX_ID_ATTEMPTS = 10
+
+
+def create_application(
+    db: ApplicationDatabase,
+    payload: ApplicationCreate,
+    actor: str = "APPLICANT",
+    details: str = "Application submitted via Applicant Portal; queued for approval workflow initiation.",
+) -> Dict[str, Any]:
+    """
+    Persists a NEW application and writes the APPLICATION_SUBMITTED audit event (`actor` / `details` identify the
+    submission channel). Never overwrites an existing record: concurrent submissions (portal, partner batch intake)
+    that race for the same sequential ID are retried with a fresh one.
+    """
     record = {
-        "application_id": generate_unique_app_id(db),
         "applicant_name": payload.applicant_name,
         "ssn_last_4": payload.ssn_last_4,
         "stated_annual_income": float(payload.stated_annual_income),
@@ -62,12 +84,15 @@ def create_application(db: ApplicationDatabase, payload: ApplicationCreate) -> D
         "graph_state": None,
         "adjudication": None,
     }
-    return db.save_application(
-        record,
-        actor="APPLICANT",
-        event_type="APPLICATION_SUBMITTED",
-        details="Application submitted via Applicant Portal; queued for approval workflow initiation.",
-    )
+    for attempt in range(MAX_ID_ATTEMPTS):
+        app_id = generate_unique_app_id(db, attempt)
+        try:
+            return db.insert_new_application(
+                {**record, "application_id": app_id}, actor=actor, event_type="APPLICATION_SUBMITTED", details=details
+            )
+        except ApplicationIdConflict:
+            continue
+    raise RuntimeError("Could not allocate a unique application ID; please retry.")
 
 
 def list_applications(db: ApplicationDatabase, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -117,8 +142,11 @@ def _adjudicator_type(record: Dict[str, Any]) -> Optional[str]:
     return "AI_AGENT"
 
 
-def to_summary(record: Dict[str, Any]) -> ApplicationSummary:
+def to_summary(record: Dict[str, Any], checkout: Optional[CheckoutInfo] = None) -> ApplicationSummary:
+    """`checkout` is only surfaced while the file is awaiting review (a stale row is never shown)."""
     state = record.get("graph_state") or {}
+    if stage_for(record.get("status")) != "PENDING_REVIEW":
+        checkout = None
     loan_amount = float(record.get("loan_amount_requested") or 0.0)
     return ApplicationSummary(
         application_id=record["application_id"],
@@ -137,8 +165,9 @@ def to_summary(record: Dict[str, Any]) -> ApplicationSummary:
         underwriting_decision=state.get("underwriting_decision"),
         adjudicator_type=_adjudicator_type(record),  # type: ignore[arg-type]
         adjudication=record.get("adjudication"),
+        checkout=checkout,
     )
 
 
-def to_detail(record: Dict[str, Any]) -> ApplicationDetail:
-    return ApplicationDetail(**to_summary(record).model_dump(), graph_state=record.get("graph_state"))
+def to_detail(record: Dict[str, Any], checkout: Optional[CheckoutInfo] = None) -> ApplicationDetail:
+    return ApplicationDetail(**to_summary(record, checkout).model_dump(), graph_state=record.get("graph_state"))

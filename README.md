@@ -89,7 +89,11 @@ loan-agent/
 ├── requirements-dev.txt        # Development and testing dependencies (pytest, pytest-cov)
 ├── policy_v1.md                # Apex Financial Credit Underwriting Policy (US-2026)
 ├── dbconfig.ini                # Storage mode (local SQLite / remote PostgreSQL) & database locations
-├── setup_env.sh                # Dev sandbox bootstrap: venv + activation + both requirements files
+├── batch_intake.ini            # Partner batch intake: monitored folders, timings, limits, approved partners
+├── partner_kit/                # Published to approved partners
+│   ├── LOAN_BATCH_FILE_SPEC.md # CSV batch file specification (v1.0): delivery, columns, validation, results
+│   └── loan_batch_sample.csv   # Sample batch file
+├── setup_env.sh                # Dev sandbox bootstrap (executable): venv + activation + both requirements files
 ├── run_api.py                  # Launches the FastAPI agentic service (uvicorn)
 ├── initiate_workflow.py        # CLI/cron scheduler: runs the approval workflow via POST /api/v1/workflows/run
 ├── list_loans.py               # Admin CLI: queries applications / status summary via GET /api/v1/applications & /stats
@@ -100,18 +104,20 @@ loan-agent/
 │   └── config.toml             # Streamlit theme for app.py / agentic_app.py
 ├── api/                        # ⭐ Autonomous agentic underwriting service — FastAPI
 │   ├── main.py                 # App factory, lifespan (DB + checkpointer warm-up), router mounting
-│   ├── dependencies.py         # DI providers (application DB, LangGraph checkpointer, workflow lock)
+│   ├── dependencies.py         # DI providers (application DB, checkpointer), establish_user_identity(), pipeline lock
 │   ├── schemas.py              # Pydantic request/response contracts (the public API surface)
 │   ├── routers/                # HTTP layer only — validation, status codes, serialization
-│   │   ├── applications.py     # /api/v1/applications: submit, list, detail, dossier, ratios, workflow, decision
+│   │   ├── applications.py     # /api/v1/applications: submit, list, detail, dossier, ratios, workflow, checkout, decision
 │   │   ├── workflows.py        # /api/v1/workflows/run (fire-and-forget), /workflows/runs/{id}, /api/v1/stats
-│   │   ├── admin.py            # /api/v1/admin: status summary, job health, run history, schedule config
+│   │   ├── admin.py            # /api/v1/admin: status summary, job health, run history, schedule config, batch intake
 │   │   ├── reference.py        # /api/v1/health, /system, /personas, /calculator, /policy
 │   │   └── pages.py            # / , /portal, /desk (Jinja2 server-rendered workbench)
 │   ├── services/               # Orchestration layer — no HTTP, no UI
 │   │   ├── applications.py     # Submission, reference IDs, listing/stage filters, queue stats, projections
 │   │   ├── dossier.py          # Review dossier assembly + deterministic ratio recalculation
 │   │   ├── workflows.py        # Pipeline dispatch guards, batch runs, HitL decision resumption
+│   │   ├── checkout.py         # Review checkouts: one reviewer per PENDING_REVIEW file (lease, heartbeat, release)
+│   │   ├── batch_intake.py     # Partner batch intake: inbox monitor, CSV validation, submission, results files
 │   │   ├── scheduler.py        # initiate_workflow run log, health evaluation, persisted interval, periodic trigger
 │   │   └── policy.py           # policy_v1.md loader + Markdown → HTML
 │   ├── templates/              # base.html, portal.html, desk.html, admin.html
@@ -134,6 +140,10 @@ loan-agent/
     ├── __init__.py
     ├── conftest.py             # Shared pytest fixtures, in-memory DBs & deterministic mock LLM
     ├── test_api.py             # End-to-end FastAPI tests (submit → pipeline → HitL decision → archive)
+    ├── test_checkout.py        # Review checkout: exclusive launch, lease/heartbeat, release, decision enforcement
+    ├── test_identity.py        # Per-tab session identity (establish_user_identity) & the authentication plug-in seam
+    ├── test_batch_intake.py    # Partner batch intake: validation, folder flow, idempotency, admin API, monitor
+    ├── fixtures/loan_batch_with_errors.csv  # Batch file exercising every row-level validation (demo / tests)
     ├── test_calculator.py      # Unit tests for financial ratio algorithms
     ├── test_mock_apis.py       # Unit tests for bureau/bank APIs & pre-filtering
     ├── test_schema.py          # Unit tests for Pydantic schemas & state models
@@ -185,7 +195,13 @@ HTTP request ──▶ api/routers (contracts, status codes) ──▶ api/servi
   - *Built-in schedule*: the service itself initiates the workflow for NEW files every *N* minutes (default **2**), configurable on the Administrator screen (`PUT /api/v1/admin/scheduler/config`). Disable with `WORKFLOW_SCHEDULER_ENABLED=0` (or the screen toggle) when an external cron owns the cadence.
   - *External / manual*: `python -m initiate_workflow` (cron) is a thin REST client that calls `POST /api/v1/workflows/run` and returns immediately (**fire-and-forget**); the service logs the run and executes it in the background.
   - *Per file (integrations)*: `POST /api/v1/applications/{id}/workflow` (`?sync=true` to wait). All paths share the same `process_application()` engine and status transitions (`NEW → PENDING_PROCESSING → …`).
-- **Administrator screen (`/admin`)**: (a) application counts by the five main statuses — *new, pending processing, pending review, approved, rejected* — with sub-status detail; (b) a monitor showing whether the initiate-workflow job is running on schedule (`HEALTHY` / `OVERDUE` / `RUNNING` / `NEVER_RUN`, last run, next due, run history with per-run counts); (c) configuration of the interval between runs.
+- **Partner Batch Intake (bulk applications over FTP)**: approved third parties deliver CSV batch files (format: [`partner_kit/LOAN_BATCH_FILE_SPEC.md`](partner_kit/LOAN_BATCH_FILE_SPEC.md), sample: [`partner_kit/loan_batch_sample.csv`](partner_kit/loan_batch_sample.csv)) into their own inbox folder `<root>/inbox/<PARTNER_ID>/`. The service monitors the inboxes (`batch_intake.ini`: every 15 s; a file is picked up once unchanged for 10 s) and:
+  - validates every row with the same `ApplicationCreate` rules as the Applicant Portal plus strict CSV formats; **valid rows are submitted as `NEW` applications** (audit actor `PARTNER:<ID>`) and are then underwritten by the regular initiate-workflow job; **rows with bad or missing data are flagged and not submitted**, with every problem recorded;
+  - rejects whole files that cannot be read safely (not UTF-8, invalid header, too large / too many rows, empty) and files from folders that are not approved partners — nothing is submitted from them;
+  - is idempotent: a `partner_reference` is accepted only once per partner, and a byte-identical file is not reprocessed (`DUPLICATE_FILE`);
+  - claims each file by an atomic rename (`processing/`), then files it under `archive/` or `rejected/`, and writes a PII-free results file to the partner's `outbox/` (row, reference, ACCEPTED / FLAGGED, application ID, reasons). Files interrupted by a restart are re-queued without double submission.
+  - Approved partners are listed in `batch_intake.ini` (`[approved_partners]`); env overrides `BATCH_INTAKE_CONFIG`, `BATCH_INTAKE_ENABLED`, `BATCH_INTAKE_ROOT`. The monitor runs whenever the service's background jobs run.
+- **Administrator screen (`/admin`)**: (a) application counts by the five main statuses — *new, pending processing, pending review, approved, rejected* — with sub-status detail; (b) a monitor showing whether the initiate-workflow job is running on schedule (`HEALTHY` / `OVERDUE` / `RUNNING` / `NEVER_RUN`, last run, next due, run history with per-run counts); (c) configuration of the interval between runs; (d) **Partner Batch Intake**: monitor health, approved partners with their inbox/outbox folders and waiting files, recent batch files, per-row outcomes with the reasons rows were flagged, and *Scan Inboxes Now*.
 - **REST-first administration**: `list_loans`, `trace_loan`, and `initiate_workflow` invoke the service's endpoints rather than executing database/workflow code in-process. `list_loans --count` prints counts for the five main statuses with sub-statuses (e.g. `AUTO_DENIED` / `HUMAN_DENIED` under *Rejected*) indented beneath.
 - **Retention-safe by construction**: the service exposes no endpoint, and the domain package no method, that deletes application or audit-trail records.
 - **Intelligent Dual-Queue Routing**:
@@ -196,8 +212,10 @@ HTTP request ──▶ api/routers (contracts, status codes) ──▶ api/servi
   - **Credit Tradelines**: FICO, bureau debt, public records, tradeline audit table.
   - **Bank Cash Flow**: classifications auto-populated from graph state (`categorized_transactions`) with per-transaction AI reasoning; credit/debit-specific dropdown options; *Reset to Heuristic* served by `loan_agent.classification` (single source of truth).
   - **Financial Ratios**: pre-calculated from graph state; `POST …/ratios/recalculate` re-runs the deterministic calculator with the officer's classifications **without mutating** the persisted graph state.
-- **Human Override & LangGraph Resumption**: `POST /api/v1/applications/{id}/decision` validates the mandatory justification memo, injects `human_reviewer_decision` / `human_reviewer_notes` via `graph.update_state()`, resumes with `graph.invoke(None)`, and finalizes as `HUMAN_APPROVED` or `HUMAN_DENIED`. State-machine guards return `409 Conflict` for files not awaiting review.
-- **Concurrency safety**: pipeline executions and HitL resumptions are serialized behind a process-level lock, and the shared database connection is guarded, because FastAPI runs sync handlers in a threadpool.
+- **Caller Identity — one session per browser tab** (`establish_user_identity()` in `api/dependencies.py`, applied to every `/api/v1` route): a request without the `X-Apex-Session-Id` header is a new session — the server issues a random UUID token in the same response header. The workbench establishes it with its first call (`GET /api/v1/session`), keeps it in **sessionStorage** (scoped to the tab, survives reloads) and sends it on every later call. A second tab starts without a token and becomes a different identity. Every screen shows the tab's session label (e.g. **🪪 Session 3F9A1C02**) in the page header; the label is derived from the token and never reveals it. The token identifies a tab; it is **not** authentication — when authentication is introduced, `establish_user_identity()` is the single place to resolve the authenticated principal instead.
+- **Exclusive Review Checkout (one identity per file)**: opening a pending file first checks it out to the calling identity (`POST …/checkout`); while it is checked out, no other reviewer **or other browser tab** can launch it — the queue shows **🔒 Checked out by another session** and a launch attempt is refused with `409 Conflict`. Who holds a file is never disclosed to other sessions (only the holder sees its own label; the audit trail records the real holder). The checkout is a lease (5 min) renewed by a heartbeat (`POST …/checkout/renew`, every 60 s) while the review is open, released when the review or the tab is closed (`DELETE …/checkout`), and released automatically with the determination. An abandoned checkout (crashed browser) lapses after the lease; administrators can force-release one (`DELETE …/checkout?force=true&actor=`), after which the holder's open review is told it lost the file. Checkout acquisitions and releases are written to the audit trail; heartbeats are not.
+- **Human Override & LangGraph Resumption**: `POST /api/v1/applications/{id}/decision` validates the mandatory justification memo, injects `human_reviewer_decision` / `human_reviewer_notes` via `graph.update_state()`, resumes with `graph.invoke(None)`, and finalizes as `HUMAN_APPROVED` or `HUMAN_DENIED`. The calling identity must hold the file's checkout (one is taken implicitly when nobody holds it, so API clients need not check out first); `officer` is the name recorded on the determination; the checkout is claimed atomically, so exactly one determination is recorded per file. State-machine guards return `409 Conflict` for files not awaiting review or checked out by someone else.
+- **Concurrency safety**: pipeline executions (batch and single-file) are serialized behind a process-level lock so no NEW file is processed twice; HitL decisions never wait on that lock, so Approve/Reject stays responsive while the periodic job runs. Review exclusivity is enforced by single conditional SQL statements, so it also holds across worker processes sharing the database.
 
 #### API Reference (`/docs` for interactive OpenAPI)
 
@@ -219,13 +237,21 @@ HTTP request ──▶ api/routers (contracts, status codes) ──▶ api/servi
 | `GET` | `/api/v1/applications/{id}/classifications/heuristic` | Rule-based classification map |
 | `POST` | `/api/v1/applications/{id}/ratios/recalculate` | What-if deterministic ratio recalculation |
 | `POST` | `/api/v1/applications/{id}/workflow?sync=&force=` | Dispatch the pipeline for one file |
-| `POST` | `/api/v1/applications/{id}/decision` | Human credit officer determination (HitL resume) |
+| `GET` | `/api/v1/session` | Establish (no header) or confirm (with `X-Apex-Session-Id`) the caller's per-tab session identity |
+| `POST` | `/api/v1/applications/{id}/checkout` | Check a PENDING_REVIEW file out to the calling identity (`409` if held by another reviewer / tab) |
+| `POST` | `/api/v1/applications/{id}/checkout/renew` | Heartbeat: extend the lease of a checkout you hold (`409` if you no longer hold it) |
+| `DELETE` | `/api/v1/applications/{id}/checkout` | Release your checkout (`?force=true&actor=` for an administrator override) |
+| `POST` | `/api/v1/applications/{id}/decision` | Human credit officer determination (HitL resume); the calling identity must hold the checkout |
 | `POST` | `/api/v1/workflows/run?sync=&trigger=` | Initiate the workflow for all NEW files — fire-and-forget by default (`limit`, `dry_run`) |
 | `GET` | `/api/v1/workflows/runs/{run_id}` | Outcome of a logged run |
 | `GET` | `/api/v1/admin/status-summary` | Counts by the five main statuses (+ sub-statuses) |
 | `GET` | `/api/v1/admin/scheduler` | Job health: is initiate-workflow running periodically? |
 | `GET` / `PUT` | `/api/v1/admin/scheduler/config` | Interval between runs (minutes) and built-in scheduler toggle |
 | `GET` | `/api/v1/admin/workflow-runs?limit=` | Run history |
+| `GET` | `/api/v1/admin/intake` | Partner batch-intake monitor: status, folders, approved partners, files waiting |
+| `GET` | `/api/v1/admin/intake/batches?limit=&partner_id=` | Recently received batch files with accepted / flagged counts |
+| `GET` | `/api/v1/admin/intake/batches/{batch_id}` | One batch file with the outcome of every row (flag reasons) |
+| `POST` | `/api/v1/admin/intake/scan` | Process files waiting in the partner inboxes now |
 
 ---
 
@@ -303,6 +329,7 @@ The system includes 3 pre-configured demo borrower profiles accessible via the *
 cd /path/to/loan-agent
 source ./setup_env.sh      # creates ./venv, activates it, installs requirements.txt + requirements-dev.txt
 ```
+(`setup_env.sh` is committed with execute permission, so `./setup_env.sh` also works without a `chmod`.)
 Options: `VENV_DIR=.venv source ./setup_env.sh` (custom location), `PYTHON=python3.12 source ./setup_env.sh` (specific interpreter). The script is idempotent — re-run it to pick up dependency changes.
 
 ### 2. Manual Setup (equivalent)
@@ -368,8 +395,8 @@ curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H 'Conten
    - **Mrs. Some Name (Prime)**: Click Submit → AI Underwriter approves automatically per Tier 1 rules → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_APPROVED`.
    - **Mr. Some Name (Subprime)**: Click Submit → AI Underwriter detects knockout criteria (FICO < 620, DTI > 45%, 4 NSF fees) → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_DENIED` and ECOA adverse action notices.
    - **Ms. Some Name (Nuanced / High-Value)**: Click Submit → loan amount ($35,000) and income variance (>15%) trigger Section 4 escalation → graph pauses execution before `human_review_node` → appears in the **Pending Loan Review Queue**.
-3. Switch to the **Underwriter Desk** (`/desk`) via the sidebar navigation.
-4. Click **Review & Adjudicate ↗** on Ms. Some Name's escalated file:
+3. Switch to the **Underwriter Desk** (`/desk`) via the sidebar navigation (the header badge shows this tab's session, e.g. **🪪 Session 3F9A1C02**).
+4. Click **Review & Adjudicate ↗** on Ms. Some Name's escalated file — it is now checked out to this tab (open `/desk` in a second tab to see it shown as **🔒 Checked out by Session …**):
    - **`🤖 AI Assessment` Tab**: Review the AI recommendation (`ESCALATE`), confidence score, detailed underwriter memorandum, policy citations, bank analyst narrative, and complete LangGraph execution trace.
    - **`💳 Bank Cash Flow` Tab**: Observe how all transactions are **auto-populated and pre-classified** by the AI Bank Statement Analyst agent.
    - **`📊 Financial Ratios` Tab**: Observe how all financial metrics (*Post-Loan DTI*, *Payment Cushion Ratio*, *Income Variance*) are **auto-populated from the graph state** without needing manual computation.
@@ -379,6 +406,17 @@ curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H 'Conten
    - Click **`✅ Approve`** (or **`❌ Reject`**).
    - The system updates graph state and resumes execution, finalizing the loan as `HUMAN_APPROVED` (or `HUMAN_DENIED`).
 6. Navigate to the **Adjudicated / Completed Archive** to inspect the full audit trail, execution trace, and officer notes.
+
+#### Partner Batch Intake Walkthrough:
+1. With the service running, "deliver" a batch file the way a partner's FTP client would (upload under a temporary name, then rename):
+   ```bash
+   cp partner_kit/loan_batch_sample.csv data/intake/inbox/ACME_BROKERS/ACME_BROKERS_20260115_001.csv.part
+   mv data/intake/inbox/ACME_BROKERS/ACME_BROKERS_20260115_001.csv{.part,}
+   cp tests/fixtures/loan_batch_with_errors.csv data/intake/inbox/ACME_BROKERS/ACME_BROKERS_20260115_002.csv
+   ```
+2. Within ~30 seconds both files are picked up (or click **Scan Inboxes Now** on **Administrator → 📥 Partner Batch Intake**). The sample is fully accepted; the second file is *partially accepted* — open it to see each flagged row and why.
+3. The partner's results files appear in `data/intake/outbox/ACME_BROKERS/`.
+4. The accepted rows are `NEW` applications; the initiate-workflow job underwrites them on its next run, exactly like portal submissions.
 
 ---
 

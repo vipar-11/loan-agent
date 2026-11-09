@@ -2,13 +2,16 @@
 Workflow orchestration services: single-application runs, batch runs, and human-in-the-loop decisions.
 
 Thin wrappers over `loan_agent.workflow_runner` that add API-specific concerns:
-state-machine guards (which statuses may be dispatched), scheduling semantics, and execution serialization.
+state-machine guards (which statuses may be dispatched), scheduling semantics, and execution serialization
+(see `api.dependencies`: pipeline runs are serialized with each other; human decisions never wait on an
+in-progress initiate_workflow batch and are made exclusive per application by the review checkout).
 """
 import logging
 from typing import Any, Dict, Optional
 
-from api.dependencies import WORKFLOW_LOCK
-from api.schemas import HumanDecisionRequest
+from api.dependencies import PIPELINE_LOCK
+from api.schemas import HumanDecisionRequest, UserIdentity
+from api.services import checkout as checkout_service
 from loan_agent.db import ApplicationDatabase
 from loan_agent.workflow_runner import (
     process_application,
@@ -57,7 +60,7 @@ def run_for_application(
     initiator: str = "API",
 ) -> Dict[str, Any]:
     """Executes the pipeline for one application (serialized). Never raises on pipeline failure."""
-    with WORKFLOW_LOCK:
+    with PIPELINE_LOCK:
         logger.info("Running underwriting pipeline for %s", record["application_id"])
         item = process_application(record, app_db=db, checkpointer=checkpointer, initiator=initiator)
         logger.info("Pipeline finished for %s -> %s", record["application_id"], item.get("status"))
@@ -71,7 +74,7 @@ def run_batch(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Batch-runs the pipeline for every NEW application (API equivalent of `python -m initiate_workflow`)."""
-    with WORKFLOW_LOCK:
+    with PIPELINE_LOCK:
         return run_initiate_workflow(dry_run=dry_run, limit=limit, app_db=db, checkpointer=checkpointer)
 
 
@@ -95,17 +98,31 @@ def record_human_decision(
     payload: HumanDecisionRequest,
     db: ApplicationDatabase,
     checkpointer: Any,
+    identity: UserIdentity,
 ) -> Dict[str, Any]:
     """
     Resumes the paused graph with the officer's determination.
-    Raises KeyError (unknown application) or ValueError (wrong state / missing notes).
+
+    The caller's identity must hold the file's review checkout (taken when the file was opened in the Underwriter
+    Desk); if nobody has it checked out, one is taken implicitly for this request. The checkout is claimed atomically,
+    so exactly one determination is recorded per file, and it is dropped once the determination is persisted.
+    Never waits on an in-progress initiate_workflow batch (it only processes NEW files).
+
+    Raises KeyError (unknown application), ValueError (wrong state / missing notes) or
+    checkout_service.CheckoutConflict (checked out by another reviewer / determination already in flight).
     """
-    with WORKFLOW_LOCK:
-        return resume_with_human_decision(
-            application_id=application_id,
+    app_id, held_before = checkout_service.begin_decision(db, application_id, identity)
+    try:
+        record = resume_with_human_decision(
+            application_id=app_id,
             decision=payload.decision,
             notes=payload.notes,
             officer=payload.officer,
             app_db=db,
             checkpointer=checkpointer,
         )
+    except Exception:
+        checkout_service.abort_decision(db, app_id, identity, held_before)
+        raise
+    checkout_service.end_decision(db, app_id)
+    return record

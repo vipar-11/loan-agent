@@ -8,9 +8,18 @@
 
   let apps = [];
   let policyHtml = null;
-  let modal = { id: null, dossier: null, classifications: {} };
+  // heartbeat: lease-renewal timer; lost: checkout no longer held by this tab;
+  // deciding / decided: a determination is in flight / recorded (the server releases the checkout itself).
+  const EMPTY_MODAL = { id: null, dossier: null, classifications: {}, heartbeat: null, lost: false, deciding: false, decided: false };
+  let modal = { ...EMPTY_MODAL };
 
   ApexUI.initTabs(document);
+
+  /* ==================================================================
+     Session identity: this browser tab is one reviewer identity (see api.js)
+     ================================================================== */
+  // The session badge itself is rendered in the shared page header by api.js (every screen shows it).
+  const sessionLabel = () => (ApexAPI.currentIdentity() || {}).display_name || 'this session';
 
   /* ==================================================================
      Data loading & stats
@@ -53,18 +62,29 @@
       el.innerHTML = emptyState('📭', 'Underwriting Queue Is Empty (0 Pending Reviews)', 'Applications with <strong>ESCALATE</strong> decisions will automatically appear here for credit officer review.');
       return;
     }
-    el.innerHTML = items.map(a => `
+    el.innerHTML = items.map(a => {
+      const co = a.checkout;
+      const mine = co && co.held_by_you;
+      const locked = co && !mine;
+      const lockBadge = locked
+        ? '<span class="badge-pill badge-slate badge-sm" style="margin-left:6px;">🔒 CHECKED OUT BY ANOTHER SESSION</span>'
+        : (mine ? '<span class="badge-pill badge-blue badge-sm" style="margin-left:6px;">📝 CHECKED OUT IN THIS TAB</span>' : '');
+      const action = locked
+        ? '<button class="btn btn-block" disabled title="This file is open for review in another session (another reviewer or another browser tab). It becomes available when it is closed there.">🔒 Checked out by another session</button>'
+        : `<button class="btn btn-block" data-review="${E(a.application_id)}">${mine ? 'Resume Review ↗' : 'Review & Adjudicate ↗'}</button>`;
+      return `
       <div class="queue-row">
         <div class="queue-card">
           <div>
             <span class="queue-name">${E(a.applicant_name)}</span><span class="queue-id">[${E(a.application_id)}]</span>
-            <span class="badge-pill badge-amber badge-sm" style="margin-left:8px;">ESCALATED BY AI</span>
+            <span class="badge-pill badge-amber badge-sm" style="margin-left:8px;">ESCALATED BY AI</span>${lockBadge}
             <div class="queue-meta">SSN: ${E(a.ssn_masked)} | Stated: ${ApexFmt.currency(a.stated_annual_income)}/yr | Purpose: ${E(a.loan_purpose)}${a.post_loan_dti != null ? ` | DTI: ${Number(a.post_loan_dti).toFixed(1)}%` : ''} | Submitted: ${E(a.submitted_at)}</div>
           </div>
           <span class="queue-amt">${ApexFmt.currency(a.loan_amount_requested)}</span>
         </div>
-        <button class="btn btn-block" data-review="${E(a.application_id)}">Review & Adjudicate ↗</button>
-      </div>`).join('');
+        ${action}
+      </div>`;
+    }).join('');
     el.querySelectorAll('[data-review]').forEach(btn => btn.addEventListener('click', () => openModal(btn.getAttribute('data-review'))));
   }
 
@@ -159,22 +179,77 @@
   modalEl.addEventListener('click', (e) => { if (e.target === modalEl) closeModal(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modalEl.classList.contains('hidden')) closeModal(); });
 
-  function closeModal() {
-    modalEl.classList.add('hidden');
-    modal = { id: null, dossier: null, classifications: {} };
-    modalBody.innerHTML = '<div class="txt-muted"><span class="spinner"></span> Loading dossier...</div>';
+  /** Releases our checkout unless it is gone already (lost, or consumed by a recorded determination). */
+  function releaseHeldCheckout(keepalive) {
+    if (modal.id && !modal.lost && !modal.decided) {
+      ApexAPI.releaseCheckout(modal.id, keepalive).catch(() => { /* lease lapses on its own */ });
+    }
   }
 
+  function closeModal() {
+    stopHeartbeat();
+    releaseHeldCheckout(false);
+    modalEl.classList.add('hidden');
+    modal = { ...EMPTY_MODAL };
+    modalBody.innerHTML = '<div class="txt-muted"><span class="spinner"></span> Loading dossier...</div>';
+    loadAll();
+  }
+
+  // Closing the tab / navigating away must not leave the file locked for the full lease.
+  window.addEventListener('pagehide', () => releaseHeldCheckout(true));
+
   async function openModal(id) {
+    // Check the file out to this tab BEFORE showing anything: if another identity holds it, it cannot be launched.
+    let lease;
+    try {
+      lease = await ApexAPI.checkout(id);
+    } catch (ex) {
+      ApexUI.showAlert(alertBox, ex.status === 409 ? 'warning' : 'error', `🔒 ${ex.message}`);
+      loadAll();
+      return;
+    }
+    alertBox.innerHTML = '';
+    modal = { ...EMPTY_MODAL, id };
     modalEl.classList.remove('hidden');
+    startHeartbeat(lease.heartbeat_seconds);
     try {
       const [dossier, policy] = await Promise.all([ApexAPI.getDossier(id), policyHtml ? Promise.resolve(null) : ApexAPI.policy()]);
+      if (modal.id !== id) return;  // closed while loading
       if (policy) policyHtml = policy.html;
-      modal = { id, dossier, classifications: Object.fromEntries(dossier.bank.transactions.map(t => [t.tx_id, t.classification])) };
+      modal.dossier = dossier;
+      modal.classifications = Object.fromEntries(dossier.bank.transactions.map(t => [t.tx_id, t.classification]));
       renderModal();
     } catch (ex) {
-      modalBody.innerHTML = `<div class="alert alert-error">${E(ex.message)}</div>`;
+      if (modal.id === id) modalBody.innerHTML = `<div class="alert alert-error">${E(ex.message)}</div>`;
     }
+  }
+
+  /* Lease renewal: keeps the checkout alive while the review is open. */
+  function startHeartbeat(seconds) {
+    stopHeartbeat();
+    const { id } = modal;
+    modal.heartbeat = setInterval(async () => {
+      if (modal.id !== id || modal.deciding || modal.lost) return;
+      try {
+        await ApexAPI.renewCheckout(id);
+      } catch (ex) {
+        if (ex.status === 409 || ex.status === 404) checkoutLost(ex.message);
+        // other failures (network blip): retry on the next beat — the lease tolerates missed beats
+      }
+    }, Math.max(5, Number(seconds) || 60) * 1000);
+  }
+
+  function stopHeartbeat() {
+    if (modal.heartbeat) clearInterval(modal.heartbeat);
+    modal.heartbeat = null;
+  }
+
+  function checkoutLost(message) {
+    stopHeartbeat();
+    modal.lost = true;
+    const banner = $('checkout-banner');
+    if (banner) banner.innerHTML = `<div class="alert alert-error" style="margin:0 0 10px 0;">🔒 <strong>You no longer hold this file.</strong> ${E(message)} Close this review; no determination can be recorded from it.</div>`;
+    modalBody.querySelectorAll('[data-decision]').forEach(b => { b.disabled = true; });
   }
 
   function renderModal() {
@@ -219,6 +294,7 @@
           <div class="body">${E(memoSnip)}</div>
         </div>
         <div class="section-label">Human Credit Officer Determination</div>
+        <div id="checkout-banner"><div class="alert alert-success" style="margin:0 0 10px 0; font-size:0.75rem;">🔒 Checked out to this tab (<strong>${E(sessionLabel())}</strong>). Other reviewers and other browser tabs cannot open this file until you close it.</div></div>
         <form id="decision-form">
           <label class="field-label" for="officer">Adjudicating Officer *</label>
           <input type="text" id="officer" value="Human Underwriter" />
@@ -369,6 +445,7 @@
   }
 
   async function submitDecision(decision) {
+    if (modal.lost) return;
     const notes = $('notes').value.trim();
     const errBox = $('decision-error');
     if (!notes) {
@@ -381,15 +458,18 @@
     buttons.forEach(b => b.disabled = true);
     const active = modalBody.querySelector(`[data-decision="${decision}"]`);
     active.innerHTML = `<span class="spinner"></span> Recording determination (${decision})…`;
+    modal.deciding = true;
     try {
       const updated = await ApexAPI.recordDecision(modal.id, { decision, officer: $('officer').value, notes });
+      modal.decided = true;  // the server released the checkout together with the determination
       closeModal();
       ApexUI.showAlert(alertBox, 'success', `✅ ${updated.application_id} finalized as ${updated.status} by ${updated.adjudication.officer}.`);
-      await loadAll();
     } catch (ex) {
+      modal.deciding = false;
       errBox.innerHTML = `<div class="alert alert-error" style="margin:0;">${E(ex.message)}</div>`;
-      buttons.forEach(b => b.disabled = false);
       active.textContent = decision === 'APPROVE' ? '✅ Approve' : '❌ Reject';
+      if (ex.status === 409) { checkoutLost(ex.message); return; }
+      buttons.forEach(b => b.disabled = false);
     }
   }
 

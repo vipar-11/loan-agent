@@ -1,12 +1,13 @@
 """
-/api/v1 reference & system endpoints: health, system info, demo personas, installment quotes, policy document.
+/api/v1 reference & system endpoints: session identity, health, system info, demo personas, installment quotes,
+policy document.
 """
 import os
 from typing import List
 
 from fastapi import APIRouter, Depends, Query
 
-from api.dependencies import get_db
+from api.dependencies import establish_user_identity, get_db
 from api.schemas import (
     ANNUAL_RATE,
     LOAN_AMOUNT_MAX,
@@ -17,6 +18,7 @@ from api.schemas import (
     Persona,
     PolicyDocument,
     SystemInfo,
+    UserIdentity,
 )
 from api.services import applications as app_service
 from api.services.policy import load_policy_html, load_policy_markdown
@@ -28,6 +30,16 @@ from loan_agent.mock_apis import APPLICANT_PROFILES
 router = APIRouter(prefix="/api/v1", tags=["Reference & System"])
 
 API_VERSION = "1.0.0"
+
+
+@router.get("/session", response_model=UserIdentity, summary="Establish / confirm the caller's session identity")
+def session_identity(identity: UserIdentity = Depends(establish_user_identity)) -> UserIdentity:
+    """
+    The workbench calls this first in every browser tab. Without the `X-Apex-Session-Id` header a new session token
+    is issued (`is_new_session: true`, token in `user_id` and in the `X-Apex-Session-Id` response header); the tab
+    stores it in sessionStorage and sends it on every later call. With the header, the same identity is confirmed.
+    """
+    return identity
 
 
 @router.get("/health", summary="Liveness probe")

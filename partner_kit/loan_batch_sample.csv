@@ -1,0 +1,6 @@
+partner_reference,applicant_name,ssn_last_4,stated_annual_income,loan_amount_requested,loan_purpose,fcra_consent
+ACME-2026-000101,Mrs. Some Name,1111,96000.00,15000.00,Home Improvement,Y
+ACME-2026-000102,Mr. Some Name,2222,60000,20000,Debt Consolidation,Y
+ACME-2026-000103,Ms. Some Name,3333,110000.00,35000.00,Major Purchase,Y
+ACME-2026-000104,"Some Name, Jr.",1111,88500.50,12000.00,Medical Expenses,Y
+ACME-2026-000105,Ms. Some Other Name,3333,125000.00,25000.00,Business,Y

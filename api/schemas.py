@@ -64,6 +64,44 @@ class Adjudication(BaseModel):
     agent_notes: Optional[str] = None
 
 
+class UserIdentity(BaseModel):
+    """
+    Who is calling. Today: an anonymous per-browser-tab session established by `establish_user_identity()`.
+    When authentication is introduced, the same model carries the authenticated principal.
+    """
+
+    user_id: str = Field(..., description="Opaque identity key. For anonymous sessions: the tab's session token.")
+    display_name: str = Field(..., examples=["Session 3F9A1C02"], description="Safe-to-share label (never the token).")
+    auth_method: str = Field(
+        "anonymous-session", examples=["anonymous-session"],
+        description="How the identity was established (future authentication plug-ins report their own method).",
+    )
+    is_new_session: bool = Field(False, description="True when the server issued a new session token on this request.")
+
+
+class CheckoutInfo(BaseModel):
+    """An active review checkout: the application is open in exactly one reviewer's desk."""
+
+    application_id: str
+    checked_out_by: str = Field(
+        ..., examples=["another session"],
+        description="Your own label when you hold the checkout; otherwise always \"another session\" (the holder "
+                    "is never disclosed to other sessions).",
+    )
+    held_by_you: bool = Field(False, description="True when the calling session holds this checkout.")
+    checked_out_at: str
+    expires_at: str = Field(..., description="Lease end; renewed by heartbeats while the review stays open.")
+    state: Literal["ACTIVE", "DECIDING"] = "ACTIVE"
+    ttl_seconds: int = Field(..., description="Lease length granted by each checkout / heartbeat.")
+    heartbeat_seconds: int = Field(..., description="How often an open review should renew its checkout.")
+
+
+class CheckoutReleaseResponse(BaseModel):
+    application_id: str
+    released: bool
+    message: str
+
+
 class ApplicationSummary(BaseModel):
     """Queue / archive listing projection (no raw graph state)."""
 
@@ -83,6 +121,9 @@ class ApplicationSummary(BaseModel):
     underwriting_decision: Optional[str] = None
     adjudicator_type: Optional[Literal["AI_AGENT", "HUMAN_OFFICER"]] = None
     adjudication: Optional[Adjudication] = None
+    checkout: Optional[CheckoutInfo] = Field(
+        None, description="Set while a reviewer has the file open in the Underwriter Desk (PENDING_REVIEW only)."
+    )
 
 
 class ApplicationDetail(ApplicationSummary):
@@ -206,6 +247,68 @@ class SchedulerStatus(BaseModel):
     next_due_at: Optional[str] = None
 
 
+class IntakePartner(BaseModel):
+    partner_id: str
+    name: str
+    inbox_dir: str
+    outbox_dir: str
+    pending_files: int = Field(..., description="`*.csv` files currently waiting in the partner's inbox.")
+
+
+class IntakeStatus(BaseModel):
+    """Partner batch-intake monitor: configuration, liveness and approved partners."""
+
+    enabled: bool = Field(..., description="batch_intake.ini `enabled`.")
+    monitoring: bool = Field(..., description="Whether this service process is currently monitoring the inboxes.")
+    spec_version: str
+    columns: List[str]
+    root_dir: str
+    inbox_dir: str
+    poll_seconds: float
+    settle_seconds: float
+    max_rows: int
+    max_file_bytes: int
+    last_scan_at: Optional[str] = None
+    partners: List[IntakePartner]
+
+
+class IntakeBatch(BaseModel):
+    """One batch file received from a partner."""
+
+    id: int
+    partner_id: str
+    file_name: str
+    status: str = Field(..., examples=["ACCEPTED", "PARTIALLY_ACCEPTED", "FLAGGED", "REJECTED", "DUPLICATE_FILE",
+                                       "FAILED", "INTERRUPTED", "RECEIVED"])
+    received_at: str
+    processed_at: Optional[str] = None
+    total_rows: int = 0
+    accepted_rows: int = 0
+    flagged_rows: int = 0
+    error_message: Optional[str] = None
+    stored_path: Optional[str] = None
+    results_path: Optional[str] = None
+    sha256: Optional[str] = None
+    file_bytes: int = 0
+
+
+class IntakeRow(BaseModel):
+    row_number: int
+    partner_reference: Optional[str] = None
+    status: Literal["ACCEPTED", "FLAGGED"]
+    application_id: Optional[str] = None
+    errors: List[str] = Field(default_factory=list)
+
+
+class IntakeBatchDetail(IntakeBatch):
+    rows: List[IntakeRow]
+
+
+class IntakeScanResult(BaseModel):
+    scanned_at: str
+    batches: List[IntakeBatch]
+
+
 class WorkflowScheduledResponse(BaseModel):
     application_id: str
     status: str
@@ -215,8 +318,18 @@ class WorkflowScheduledResponse(BaseModel):
 
 class HumanDecisionRequest(BaseModel):
     decision: HumanDecision
-    officer: str = Field("Human Underwriter", max_length=120)
+    officer: str = Field(
+        "Human Underwriter",
+        max_length=120,
+        description="Adjudicating officer name recorded on the determination. Exclusivity is enforced on the "
+                    "caller's session identity, which must hold the file's checkout (taken implicitly if nobody does).",
+    )
     notes: str = Field(..., description="Mandatory credit officer justification memorandum.")
+
+    @field_validator("officer")
+    @classmethod
+    def _officer_default(cls, v: str) -> str:
+        return " ".join((v or "").split()) or "Human Underwriter"
 
     @field_validator("notes")
     @classmethod

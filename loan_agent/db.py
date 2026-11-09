@@ -70,6 +70,10 @@ def normalize_status_filter(status: Optional[str]) -> Optional[List[str]]:
         return [status.strip().upper(), status.strip()]
 
 
+class ApplicationIdConflict(Exception):
+    """The generated application ID is already in use (retry with a new one)."""
+
+
 def _synchronized(method):
     """Serializes access to the shared DB connection (FastAPI executes sync handlers in a threadpool)."""
 
@@ -182,6 +186,59 @@ class ApplicationDatabase:
             )
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS intake_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    partner_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    stored_path TEXT,
+                    results_path TEXT,
+                    sha256 TEXT,
+                    file_bytes INTEGER DEFAULT 0,
+                    received_at TEXT NOT NULL,
+                    processed_at TEXT,
+                    status TEXT NOT NULL,
+                    total_rows INTEGER DEFAULT 0,
+                    accepted_rows INTEGER DEFAULT 0,
+                    flagged_rows INTEGER DEFAULT 0,
+                    error_message TEXT
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intake_rows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id INTEGER NOT NULL,
+                    row_number INTEGER NOT NULL,
+                    partner_id TEXT NOT NULL,
+                    partner_reference TEXT,
+                    status TEXT NOT NULL,
+                    application_id TEXT,
+                    errors TEXT
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_intake_rows_batch ON intake_rows(batch_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_intake_batches_sha ON intake_batches(partner_id, sha256);")
+            # A partner reference can be ACCEPTED (i.e. submitted as an application) only once per partner.
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_intake_accepted_reference "
+                "ON intake_rows(partner_id, partner_reference) WHERE status = 'ACCEPTED';"
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS application_checkouts (
+                    application_id TEXT PRIMARY KEY,
+                    checked_out_by TEXT NOT NULL,
+                    holder_key TEXT NOT NULL,
+                    checked_out_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'ACTIVE'
+                );
+                """
+            )
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS system_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -246,6 +303,59 @@ class ApplicationDatabase:
                     escalated INTEGER DEFAULT 0,
                     errors INTEGER DEFAULT 0,
                     error_message TEXT
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intake_batches (
+                    id SERIAL PRIMARY KEY,
+                    partner_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    stored_path TEXT,
+                    results_path TEXT,
+                    sha256 TEXT,
+                    file_bytes INTEGER DEFAULT 0,
+                    received_at TEXT NOT NULL,
+                    processed_at TEXT,
+                    status TEXT NOT NULL,
+                    total_rows INTEGER DEFAULT 0,
+                    accepted_rows INTEGER DEFAULT 0,
+                    flagged_rows INTEGER DEFAULT 0,
+                    error_message TEXT
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intake_rows (
+                    id SERIAL PRIMARY KEY,
+                    batch_id INTEGER NOT NULL,
+                    row_number INTEGER NOT NULL,
+                    partner_id TEXT NOT NULL,
+                    partner_reference TEXT,
+                    status TEXT NOT NULL,
+                    application_id TEXT,
+                    errors TEXT
+                );
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_intake_rows_batch ON intake_rows(batch_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_intake_batches_sha ON intake_batches(partner_id, sha256);")
+            # A partner reference can be ACCEPTED (i.e. submitted as an application) only once per partner.
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_intake_accepted_reference "
+                "ON intake_rows(partner_id, partner_reference) WHERE status = 'ACCEPTED';"
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS application_checkouts (
+                    application_id TEXT PRIMARY KEY,
+                    checked_out_by TEXT NOT NULL,
+                    holder_key TEXT NOT NULL,
+                    checked_out_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'ACTIVE'
                 );
                 """
             )
@@ -378,6 +488,32 @@ class ApplicationDatabase:
         )
 
         return self.get_application(app_id)  # type: ignore
+
+    @_synchronized
+    def insert_new_application(
+        self,
+        app_data: Dict[str, Any],
+        actor: str = "APPLICANT",
+        event_type: str = "APPLICATION_SUBMITTED",
+        details: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates a brand-new application. Unlike save_application (an upsert), this never overwrites: raises
+        ApplicationIdConflict if the ID is already taken — in this process (checked under the DB lock) or by
+        another process (primary-key violation) — so the caller can retry with a fresh ID.
+        """
+        if self.get_application(app_data["application_id"]):
+            raise ApplicationIdConflict(app_data["application_id"])
+        try:
+            return self.save_application(app_data, actor=actor, event_type=event_type, details=details)
+        except Exception as exc:  # sqlite3.IntegrityError / psycopg UniqueViolation
+            if "unique" in str(exc).lower() or "primary key" in str(exc).lower() or "duplicate" in str(exc).lower():
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                raise ApplicationIdConflict(app_data["application_id"]) from exc
+            raise
 
     @_synchronized
     def get_application(self, application_id: str) -> Optional[Dict[str, Any]]:
@@ -633,6 +769,251 @@ class ApplicationDatabase:
     def get_last_workflow_run(self) -> Optional[Dict[str, Any]]:
         runs = self.list_workflow_runs(limit=1)
         return runs[0] if runs else None
+
+    # ------------------------------------------------------------------
+    # Review checkouts (one holder per PENDING_REVIEW application at a time)
+    #
+    # holder_key is the caller's opaque identity key (today a per-browser-tab session token; later an
+    # authenticated user ID); checked_out_by is its display label. Every mutation is a single conditional
+    # SQL statement, so exclusivity holds across threads, worker processes and hosts sharing the database.
+    # Timestamps use the fixed-width "%Y-%m-%d %H:%M:%S" format and are compared as strings.
+    # ------------------------------------------------------------------
+    @_synchronized
+    def acquire_checkout(
+        self, application_id: str, holder_key: str, holder_name: str, now_str: str, expires_str: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Atomically checks the application out to `holder_key`, or renews that holder's own ACTIVE checkout.
+        Takes over a checkout only once it has expired. Returns the row as it stands afterwards:
+        the caller owns the checkout iff the returned holder_key is its own and state is ACTIVE.
+        """
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"""
+            INSERT INTO application_checkouts
+                (application_id, checked_out_by, holder_key, checked_out_at, expires_at, state)
+            VALUES ({p}, {p}, {p}, {p}, {p}, 'ACTIVE')
+            ON CONFLICT (application_id) DO UPDATE SET
+                checked_out_by = excluded.checked_out_by,
+                checked_out_at = CASE
+                    WHEN application_checkouts.holder_key = excluded.holder_key
+                         AND application_checkouts.expires_at > {p}
+                    THEN application_checkouts.checked_out_at
+                    ELSE excluded.checked_out_at END,
+                holder_key = excluded.holder_key,
+                expires_at = excluded.expires_at,
+                state = 'ACTIVE'
+            WHERE (application_checkouts.holder_key = excluded.holder_key AND application_checkouts.state = 'ACTIVE')
+               OR application_checkouts.expires_at <= {p}
+            """,
+            (application_id, holder_name, holder_key, now_str, expires_str, now_str, now_str),
+        )
+        self.conn.commit()
+        return self.get_checkout(application_id)
+
+    @_synchronized
+    def renew_checkout(self, application_id: str, holder_key: str, expires_str: str) -> bool:
+        """
+        Extends the lease of the holder's own ACTIVE checkout. Never (re)creates one: if the checkout was
+        force-released, or lapsed and was taken by someone else, the row is gone / not ours and this fails.
+        """
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE application_checkouts SET expires_at = {p} "
+            f"WHERE application_id = {p} AND holder_key = {p} AND state = 'ACTIVE'",
+            (expires_str, application_id, holder_key),
+        )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def get_checkout(self, application_id: str) -> Optional[Dict[str, Any]]:
+        """Raw checkout row (may be expired — expiry is evaluated by the caller)."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM application_checkouts WHERE application_id = {p}", (application_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    @_synchronized
+    def list_checkouts(self, active_at: Optional[str] = None) -> List[Dict[str, Any]]:
+        """All checkout rows, or only those not yet expired at `active_at`."""
+        cursor = self.conn.cursor()
+        if active_at:
+            p = "?" if self.backend == "sqlite" else "%s"
+            cursor.execute(f"SELECT * FROM application_checkouts WHERE expires_at > {p}", (active_at,))
+        else:
+            cursor.execute("SELECT * FROM application_checkouts")
+        return [dict(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def claim_checkout_for_decision(
+        self, application_id: str, holder_key: str, now_str: str, expires_str: str
+    ) -> bool:
+        """ACTIVE -> DECIDING for the holder's unexpired checkout. Exactly one concurrent caller can win."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"""
+            UPDATE application_checkouts SET state = 'DECIDING', expires_at = {p}
+            WHERE application_id = {p} AND holder_key = {p} AND state = 'ACTIVE' AND expires_at > {p}
+            """,
+            (expires_str, application_id, holder_key, now_str),
+        )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def restore_checkout(self, application_id: str, holder_key: str) -> bool:
+        """DECIDING -> ACTIVE (a determination failed; the holder keeps the file checked out)."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE application_checkouts SET state = 'ACTIVE' "
+            f"WHERE application_id = {p} AND holder_key = {p} AND state = 'DECIDING'",
+            (application_id, holder_key),
+        )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def release_checkout(self, application_id: str, holder_key: Optional[str] = None) -> bool:
+        """Deletes the checkout; only the holder's when `holder_key` is given, unconditionally otherwise."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        if holder_key is None:
+            cursor.execute(f"DELETE FROM application_checkouts WHERE application_id = {p}", (application_id,))
+        else:
+            cursor.execute(
+                f"DELETE FROM application_checkouts WHERE application_id = {p} AND holder_key = {p}",
+                (application_id, holder_key),
+            )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
+    # ------------------------------------------------------------------
+    # Partner batch intake (files received over FTP and the outcome of every row)
+    # ------------------------------------------------------------------
+    _BATCH_FIELDS = {
+        "stored_path", "results_path", "sha256", "file_bytes", "processed_at", "status",
+        "total_rows", "accepted_rows", "flagged_rows", "error_message",
+    }
+
+    @_synchronized
+    def create_intake_batch(self, partner_id: str, file_name: str, received_at: str, status: str = "RECEIVED") -> Dict[str, Any]:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        if self.backend == "sqlite":
+            cursor.execute(
+                f"INSERT INTO intake_batches (partner_id, file_name, received_at, status) VALUES ({p}, {p}, {p}, {p})",
+                (partner_id, file_name, received_at, status),
+            )
+            batch_id = cursor.lastrowid
+        else:
+            cursor.execute(
+                f"INSERT INTO intake_batches (partner_id, file_name, received_at, status) "
+                f"VALUES ({p}, {p}, {p}, {p}) RETURNING id",
+                (partner_id, file_name, received_at, status),
+            )
+            batch_id = list(cursor.fetchone().values())[0]
+        self.conn.commit()
+        return self.get_intake_batch(int(batch_id))  # type: ignore[return-value]
+
+    @_synchronized
+    def update_intake_batch(self, batch_id: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        fields = {k: v for k, v in updates.items() if k in self._BATCH_FIELDS}
+        if fields:
+            p = "?" if self.backend == "sqlite" else "%s"
+            cursor = self.conn.cursor()
+            cursor.execute(
+                f"UPDATE intake_batches SET {', '.join(f'{k} = {p}' for k in fields)} WHERE id = {p}",
+                (*fields.values(), batch_id),
+            )
+            self.conn.commit()
+        return self.get_intake_batch(batch_id)
+
+    @_synchronized
+    def get_intake_batch(self, batch_id: int) -> Optional[Dict[str, Any]]:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM intake_batches WHERE id = {p}", (batch_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    @_synchronized
+    def list_intake_batches(self, limit: int = 50, partner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        if partner_id:
+            cursor.execute(
+                f"SELECT * FROM intake_batches WHERE partner_id = {p} ORDER BY id DESC LIMIT {p}", (partner_id, int(limit))
+            )
+        else:
+            cursor.execute(f"SELECT * FROM intake_batches ORDER BY id DESC LIMIT {p}", (int(limit),))
+        return [dict(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def find_processed_intake_file(self, partner_id: str, sha256: str) -> Optional[Dict[str, Any]]:
+        """
+        An earlier batch from the same partner with identical content whose rows were actually evaluated
+        (ACCEPTED / PARTIALLY_ACCEPTED / FLAGGED). Rejected, failed or interrupted files do not count, so an identical
+        resend after a fix (or after a crash) is processed normally.
+        """
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"SELECT * FROM intake_batches WHERE partner_id = {p} AND sha256 = {p} "
+            f"AND status IN ('ACCEPTED', 'PARTIALLY_ACCEPTED', 'FLAGGED') ORDER BY id ASC LIMIT 1",
+            (partner_id, sha256),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    @_synchronized
+    def add_intake_row(
+        self,
+        batch_id: int,
+        row_number: int,
+        partner_id: str,
+        partner_reference: Optional[str],
+        status: str,
+        application_id: Optional[str] = None,
+        errors: Optional[List[str]] = None,
+    ) -> None:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"INSERT INTO intake_rows (batch_id, row_number, partner_id, partner_reference, status, application_id, errors) "
+            f"VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p})",
+            (batch_id, row_number, partner_id, partner_reference, status, application_id, self._serialize(errors or [])),
+        )
+        self.conn.commit()
+
+    @_synchronized
+    def list_intake_rows(self, batch_id: int) -> List[Dict[str, Any]]:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM intake_rows WHERE batch_id = {p} ORDER BY row_number ASC, id ASC", (batch_id,))
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["errors"] = self._deserialize(d.get("errors")) or []
+            rows.append(d)
+        return rows
+
+    @_synchronized
+    def find_accepted_partner_reference(self, partner_id: str, partner_reference: str) -> Optional[Dict[str, Any]]:
+        """The earlier ACCEPTED row for this partner reference (references are case-sensitive), if any."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"SELECT * FROM intake_rows WHERE partner_id = {p} AND partner_reference = {p} AND status = 'ACCEPTED'",
+            (partner_id, partner_reference),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # System settings (key/value, persisted across restarts)
