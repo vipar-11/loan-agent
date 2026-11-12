@@ -15,7 +15,7 @@ from loan_agent.auth import Role
 from tests.conftest import bearer_headers, create_user_with_password
 from tests.test_auth import make_app
 
-PASSWORD = "Correct-Horse-9"
+PASSWORD = "fake-password"
 
 
 def record(app_id: str, submitted_at: str, name: str = "Borrower", purpose: str = "Other", amount: float = 10000.0,

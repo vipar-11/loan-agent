@@ -40,7 +40,7 @@ class TestPersonaSetup:
 
     def test_rerun_is_idempotent(self, test_app_db, capsys):
         run(test_app_db, capsys)
-        user_directory.change_password(test_app_db, "admin", "", "Correct-Horse-9", AuthConfig())  # admin signed in
+        user_directory.change_password(test_app_db, "admin", "", "fake-password", AuthConfig())  # admin signed in
         code, out = run(test_app_db, capsys)
         assert code == 0 and out.count("[EXISTS]") == 3 and "[CREATED]" not in out
         assert test_app_db.get_user("admin")["password_hash"]  # untouched
@@ -71,7 +71,7 @@ class TestMaintenance:
     def test_reset_restores_the_empty_password_and_signs_out(self, test_app_db, capsys):
         create_user_with_password(test_app_db, "uw.one", "underwriter")
         cfg = AuthConfig()
-        principal = LocalPasswordVerifier(test_app_db, cfg).verify("uw.one", "Correct-Horse-9")
+        principal = LocalPasswordVerifier(test_app_db, cfg).verify("uw.one", "fake-password")
         session = SessionManager(test_app_db, cfg).issue(principal)
 
         code, out = run(test_app_db, capsys, "--reset", "UW.One")
@@ -109,7 +109,7 @@ class TestAccountsSignIn:
             res = browser.post("/api/v1/auth/login", json={"user_id": user_id, "password": ""})
             assert res.status_code == 200 and res.json()["identity"]["password_change_required"] is True
             res = browser.post("/api/v1/auth/password", headers={"X-Requested-With": "test"},
-                               json={"current_password": "", "new_password": "Correct-Horse-9"})
+                               json={"current_password": "", "new_password": "fake-password"})
             assert res.status_code == 200 and res.json()["home_path"] == home
             assert browser.get(home).status_code == 200
 

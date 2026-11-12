@@ -20,7 +20,7 @@ from tests.conftest import bearer_headers, create_user_with_password
 from tests.test_auth import make_app
 from tests.test_queue_filters import record
 
-PASSWORD = "Correct-Horse-9"
+PASSWORD = "fake-password"
 NOW = datetime(2026, 1, 9, 9, 0, 0)
 
 

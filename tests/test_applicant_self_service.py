@@ -18,7 +18,7 @@ from tests.test_auth import make_app
 from tests.test_rbac import application_payload
 
 CSRF = {"X-Requested-With": "ApexWorkbench"}
-PASSWORD = "Correct-Horse-9"
+PASSWORD = "fake-password"
 
 
 # ===========================================================================
@@ -50,7 +50,7 @@ class TestSelfRegisterCore:
     def test_duplicate_user_id_is_refused(self, test_app_db):
         user_directory.self_register(test_app_db, "applicant.one", PASSWORD, "Mrs. Some Name", AuthConfig())
         with pytest.raises(SignupError, match="already taken"):
-            user_directory.self_register(test_app_db, "APPLICANT.ONE", "Another-Pass-1", "Mrs. Some Other Name", AuthConfig())
+            user_directory.self_register(test_app_db, "APPLICANT.ONE", "fake-password-two", "Mrs. Some Other Name", AuthConfig())
 
     def test_cannot_take_over_an_administrator_provisioned_account(self, test_app_db):
         user_directory.create_user(test_app_db, "admin.one", Role.ADMINISTRATOR)  # empty default password, unclaimed

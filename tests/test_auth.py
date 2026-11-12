@@ -31,7 +31,7 @@ from loan_agent.auth import users as user_directory
 from loan_agent.config import AuthConfig, load_auth_config
 from tests.conftest import bearer_headers, create_user_with_password
 
-PASSWORD = "Correct-Horse-9"
+PASSWORD = "fake-password"
 CSRF = {CSRF_HEADER: "ApexWorkbench"}
 
 
@@ -40,16 +40,16 @@ CSRF = {CSRF_HEADER: "ApexWorkbench"}
 # ===========================================================================
 class TestPasswords:
     def test_hash_and_verify(self):
-        stored = passwords.hash_password("s3cret-pass")
-        assert stored.startswith("scrypt$") and "s3cret-pass" not in stored
-        assert passwords.verify_password("s3cret-pass", stored)
-        assert not passwords.verify_password("s3cret-Pass", stored)
-        assert passwords.hash_password("s3cret-pass") != stored  # salted
+        stored = passwords.hash_password("fake-password")
+        assert stored.startswith("scrypt$") and "fake-password" not in stored
+        assert passwords.verify_password("fake-password", stored)
+        assert not passwords.verify_password("Fake-Password", stored)
+        assert passwords.hash_password("fake-password") != stored  # salted
 
     def test_stored_cost_parameters_are_honoured(self, monkeypatch):
-        stored = passwords.hash_password("pw-one-two")
+        stored = passwords.hash_password("fake-password-two")
         monkeypatch.setattr(passwords, "SCRYPT_N", 2 ** 9)  # cost raised later: old hashes still verify
-        assert passwords.verify_password("pw-one-two", stored)
+        assert passwords.verify_password("fake-password-two", stored)
 
     @pytest.mark.parametrize("stored", [None, "", "garbage", "bcrypt$x$y", "scrypt$1$2$3$!!$!!"])
     def test_missing_or_malformed_hash_never_matches(self, stored):
@@ -92,12 +92,12 @@ class TestUserDirectory:
             user_directory.change_password(test_app_db, "applicant.one", "not-empty", PASSWORD, cfg)
         user_directory.change_password(test_app_db, "applicant.one", "", PASSWORD, cfg)
         with pytest.raises(PasswordChangeError, match="current password is incorrect"):
-            user_directory.change_password(test_app_db, "applicant.one", "", "Another-Pass-1", cfg)
+            user_directory.change_password(test_app_db, "applicant.one", "", "fake-password-two", cfg)
         with pytest.raises(PasswordChangeError, match="must be different"):
             user_directory.change_password(test_app_db, "applicant.one", PASSWORD, PASSWORD, cfg)
         with pytest.raises(PasswordChangeError, match="at least"):
             user_directory.change_password(test_app_db, "applicant.one", PASSWORD, "short", cfg)
-        user = user_directory.change_password(test_app_db, "applicant.one", PASSWORD, "Another-Pass-1", cfg)
+        user = user_directory.change_password(test_app_db, "applicant.one", PASSWORD, "fake-password-two", cfg)
         assert user["must_change_password"] is False and user["password_changed_at"]
 
     def test_external_accounts_cannot_use_local_passwords(self, test_app_db):
@@ -123,7 +123,7 @@ class TestLocalPasswordVerifier:
     def test_real_password(self, verifier, test_app_db):
         create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER, PASSWORD)
         assert verifier.verify("uw.one", PASSWORD).password_change_required is False
-        for wrong in ("", "wrong", PASSWORD.lower()):
+        for wrong in ("", "wrong", PASSWORD.upper()):
             with pytest.raises(AuthenticationError):
                 verifier.verify("uw.one", wrong)
 
@@ -474,11 +474,11 @@ class TestSignOutAndPasswordChange:
         login(laptop, "applicant.one")
         login(phone, "applicant.one")
         res = laptop.post("/api/v1/auth/password", headers=CSRF,
-                          json={"current_password": PASSWORD, "new_password": "Brand-New-Pass-7"})
+                          json={"current_password": PASSWORD, "new_password": "fake-password-new"})
         assert res.status_code == 200
         assert laptop.get("/api/v1/session").status_code == 200
         assert phone.get("/api/v1/session").status_code == 401
-        assert login(TestClient(app), "applicant.one", "Brand-New-Pass-7").status_code == 200
+        assert login(TestClient(app), "applicant.one", "fake-password-new").status_code == 200
 
     def test_password_change_needs_a_session(self, browser):
         res = browser.post("/api/v1/auth/password", json={"current_password": "", "new_password": PASSWORD})

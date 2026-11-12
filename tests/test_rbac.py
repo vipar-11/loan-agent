@@ -130,7 +130,7 @@ class TestPageAccess:
         clients = {}
         for role, (user_id, _name) in USERS.items():
             c = TestClient(api.app)
-            assert c.post("/api/v1/auth/login", json={"user_id": user_id, "password": "Correct-Horse-9"}).status_code == 200
+            assert c.post("/api/v1/auth/login", json={"user_id": user_id, "password": "fake-password"}).status_code == 200
             clients[role] = c
         return clients
 

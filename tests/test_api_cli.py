@@ -26,7 +26,7 @@ from loan_agent.auth import users as user_directory
 from loan_agent.mock_apis import APPLICANT_PROFILES
 from tests.conftest import bearer_headers, create_user_with_password
 
-ADMIN, APPLICANT, UNDERWRITER, PASSWORD = "ops.admin", "applicant.one", "uw.one", "Correct-Horse-9"
+ADMIN, APPLICANT, UNDERWRITER, PASSWORD = "ops.admin", "applicant.one", "uw.one", "fake-password"
 
 
 @pytest.fixture

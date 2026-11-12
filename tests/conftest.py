@@ -368,7 +368,7 @@ def sign_in_as(app, principal: Principal = OPERATOR) -> None:
     app.dependency_overrides[resolve_principal] = lambda: principal
 
 
-def create_user_with_password(db, user_id: str, role: Role, password: str = "Correct-Horse-9", name=None) -> dict:
+def create_user_with_password(db, user_id: str, role: Role, password: str = "fake-password", name=None) -> dict:
     """A real account (as manage_users.py creates it) that has already chosen `password`."""
     from loan_agent.auth import users
     from loan_agent.config import AuthConfig
@@ -377,7 +377,7 @@ def create_user_with_password(db, user_id: str, role: Role, password: str = "Cor
     return users.change_password(db, user_id, "", password, AuthConfig())
 
 
-def bearer_headers(client, user_id: str, password: str = "Correct-Horse-9") -> dict:
+def bearer_headers(client, user_id: str, password: str = "fake-password") -> dict:
     """Signs in through POST /api/v1/auth/token and returns the Authorization header for that user."""
     res = client.post("/api/v1/auth/token", data={"username": user_id, "password": password})
     assert res.status_code == 200, res.text
