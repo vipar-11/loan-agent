@@ -152,7 +152,7 @@ class TestInitiateWorkflow:
 
         cfg_file = tmp_path / "custom.ini"
         cfg_file.write_text(
-            f"[storage]\nmode=local\nlocal_app_db_path={tmp_path / 'app.db'}\nlocal_langgraph_db_path={tmp_path / 'lg.db'}\n",
+            f"[storage]\nmode=local\n\n[local]\napp_db_path={tmp_path / 'app.db'}\nlanggraph_db_path={tmp_path / 'lg.db'}\n",
             encoding="utf-8",
         )
         ret_cfg = workflow_main(["--config", str(cfg_file), "--dry-run"])

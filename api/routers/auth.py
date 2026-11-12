@@ -187,9 +187,10 @@ def issue_token(
     """
     principal = _verify_password(request, db, config, form.username, form.password)
     issued = sessions.issue(principal)
+    now = datetime.now().replace(microsecond=0)
     return TokenResponse(
         access_token=issued.token,
-        expires_in=int((issued.expires_at - datetime.now()).total_seconds()),
+        expires_in=max(0, int((issued.expires_at - now).total_seconds())),
         password_change_required=principal.password_change_required,
     )
 

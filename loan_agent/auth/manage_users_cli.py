@@ -91,10 +91,10 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  python manage_users.py\n"
-            "  python manage_users.py --applicant jane.doe --applicant-name \"Jane Doe\" "
-            "--underwriter uw.smith --admin ops.lee\n"
+            "  python manage_users.py --applicant applicant.one --applicant-name \"Mrs. Some Name\" "
+            "--underwriter uw.one --admin admin.one\n"
             "  python manage_users.py --underwriter uw.second          # add another underwriter\n"
-            "  python manage_users.py --reset uw.smith                  # back to the empty default password\n"
+            "  python manage_users.py --reset uw.one                    # back to the empty default password\n"
             "  python manage_users.py --list\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -24,7 +24,7 @@ from tests.test_auth import PUBLIC_ROUTES
 
 A, U, D = Role.APPLICANT, Role.UNDERWRITER, Role.ADMINISTRATOR
 ALL = {A, U, D}
-USERS = {A: ("jane.applicant", "Jane Applicant"), U: ("uw.smith", "Sam Smith"), D: ("ops.lee", "Lee Ops")}
+USERS = {A: ("applicant.one", "Mrs. Some Name"), U: ("uw.one", "Mr. Some Underwriter"), D: ("admin.one", "Ms. Some Admin")}
 
 
 def application_payload(key: str = "MS_SOME_NAME") -> dict:
@@ -213,15 +213,15 @@ class TestThreePersonaJourney:
         decided = api.post(f"/api/v1/applications/{app_id}/decision", headers=as_role[U],
                            json={"decision": "APPROVE", "notes": "Verified W-2 and pay stubs."})
         assert decided.status_code == 200
-        assert decided.json()["adjudication"]["officer"] == "Sam Smith"
-        assert decided.json()["adjudication"]["officer_user_id"] == "uw.smith"
+        assert decided.json()["adjudication"]["officer"] == "Mr. Some Underwriter"
+        assert decided.json()["adjudication"]["officer_user_id"] == "uw.one"
 
         # every step is attributed to the real, signed-in user
         actors = {e["event_type"]: e["actor"] for e in test_app_db.get_audit_trail(app_id)}
-        assert actors["APPLICATION_SUBMITTED"] == "Jane Applicant (jane.applicant)"
-        assert actors["WORKFLOW_INITIATED"] == "Lee Ops (ops.lee)"
-        assert actors["CHECKOUT_ACQUIRED"] == "Sam Smith (uw.smith)"
-        assert actors["HUMAN_REVIEW_DECISION"] == "Sam Smith (uw.smith)"
+        assert actors["APPLICATION_SUBMITTED"] == "Mrs. Some Name (applicant.one)"
+        assert actors["WORKFLOW_INITIATED"] == "Ms. Some Admin (admin.one)"
+        assert actors["CHECKOUT_ACQUIRED"] == "Mr. Some Underwriter (uw.one)"
+        assert actors["HUMAN_REVIEW_DECISION"] == "Mr. Some Underwriter (uw.one)"
 
     def test_underwriters_exclude_each_other(self, api, as_role, test_app_db):
         create_user_with_password(test_app_db, "uw.other", Role.UNDERWRITER, name="Other Underwriter")
@@ -230,7 +230,7 @@ class TestThreePersonaJourney:
         api.post(f"/api/v1/applications/{app_id}/workflow?sync=true", headers=as_role[D])
         assert api.post(f"/api/v1/applications/{app_id}/checkout", headers=as_role[U]).status_code == 200
         blocked = api.post(f"/api/v1/applications/{app_id}/checkout", headers=other)
-        assert blocked.status_code == 409 and "Sam Smith" not in blocked.text
+        assert blocked.status_code == 409 and "Mr. Some Underwriter" not in blocked.text
         decided = api.post(f"/api/v1/applications/{app_id}/decision", headers=other,
                            json={"decision": "DENY", "notes": "n"})
         assert decided.status_code == 409

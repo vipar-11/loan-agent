@@ -36,7 +36,7 @@ class TestLiveWorkflowPersonas:
     def test_mrs_some_name_auto_approval(self):
         """
         Persona 1 (Mrs. Some Name):
-        - FICO 745, DTI ~24.98%, Discharged bankruptcy from 2018 (not active), 0 NSF fees, 0 delinquencies.
+        - FICO 745, DTI ~24.98%, 0 public records, 0 NSF fees, 0 delinquencies, 13.05x payment cushion.
         - Expected: LLM policy underwriter issues APPROVE.
         - Graph reaches finalize_application_node with AUTO_APPROVED final status.
         """

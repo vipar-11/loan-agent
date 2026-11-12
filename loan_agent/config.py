@@ -68,6 +68,12 @@ def load_db_config(config_path: Optional[str | Path] = None) -> DatabaseConfig:
 
         if parser.has_section("storage"):
             mode = parser.get("storage", "mode", fallback=mode).strip()
+            storage_app_path = parser.get("storage", "local_app_db_path", fallback="").strip()
+            storage_lg_path = parser.get("storage", "local_langgraph_db_path", fallback="").strip()
+            if storage_app_path:
+                local_app_db = Path(storage_app_path)
+            if storage_lg_path:
+                local_lg_db = Path(storage_lg_path)
 
         if parser.has_section("local"):
             app_path_str = parser.get("local", "app_db_path", fallback=str(local_app_db)).strip()

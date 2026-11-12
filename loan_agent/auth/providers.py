@@ -59,6 +59,7 @@ class LocalPasswordVerifier:
             burn_verification_time(password)
             raise AuthenticationError(SIGN_IN_FAILED)
         if len(password) > MAX_PASSWORD_LENGTH:
+            burn_verification_time(password)
             raise AuthenticationError(SIGN_IN_FAILED)
 
         user = self.db.get_user(uid)

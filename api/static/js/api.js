@@ -113,7 +113,7 @@
     getApplication: (id) => api.get(`/applications/${encodeURIComponent(id)}`),
     submitApplication: (payload) => api.post('/applications', payload),
     myApplications: () => api.get('/applications/mine'),
-    /** Queue listing with metadata filters / ordering, e.g. { status: 'pending_review', sort: 'oldest', q: 'smith' }. */
+    /** Queue listing with metadata filters / ordering, e.g. { status: 'pending_review', sort: 'oldest', q: 'some' }. */
     queryApplications: (params) => {
       const qs = new URLSearchParams();
       Object.entries(params || {}).forEach(([k, v]) => {
@@ -224,7 +224,7 @@
     return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
   }
 
-  /** "Jane Doe" -> "JD"; "Administrator" -> "A". */
+  /** "Some Name" -> "SN"; "Administrator" -> "A". */
   function initialsFor(displayName) {
     const words = String(displayName || '').trim().split(/\s+/).filter(w => /[A-Za-z0-9]/.test(w[0] || ''));
     return ((words[0] || '?')[0] + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase();

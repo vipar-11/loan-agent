@@ -269,16 +269,16 @@ class TestApplicationOwnership:
 
     def test_submitted_by_round_trips_and_survives_updates(self, test_app_db):
         app_data = {
-            "application_id": "APP-OWN-1", "applicant_name": "Jane Doe", "ssn_last_4": "1111",
+            "application_id": "APP-OWN-1", "applicant_name": "Mrs. Some Name", "ssn_last_4": "1111",
             "stated_annual_income": 90000.0, "loan_amount_requested": 10000.0, "loan_purpose": "Other",
-            "fcra_consent": True, "status": "NEW", "submitted_by": "jane.doe",
+            "fcra_consent": True, "status": "NEW", "submitted_by": "some.name",
         }
-        saved = test_app_db.insert_new_application(app_data, actor="jane.doe")
-        assert saved["submitted_by"] == "jane.doe"
+        saved = test_app_db.insert_new_application(app_data, actor="some.name")
+        assert saved["submitted_by"] == "some.name"
 
         # ownership is never part of an update payload, and survives regardless
         test_app_db.update_application("APP-OWN-1", {"status": "PENDING_PROCESSING"}, actor="WORKFLOW_ENGINE")
-        assert test_app_db.get_application("APP-OWN-1")["submitted_by"] == "jane.doe"
+        assert test_app_db.get_application("APP-OWN-1")["submitted_by"] == "some.name"
 
     def test_submitted_by_defaults_to_null(self, test_app_db):
         app_data = {
@@ -290,17 +290,17 @@ class TestApplicationOwnership:
         assert saved["submitted_by"] is None
 
     def test_list_applications_for_user_is_scoped_and_ordered(self, test_app_db):
-        for i, (owner, status_) in enumerate([("jane", "NEW"), ("bob", "NEW"), ("jane", "AUTO_APPROVED")]):
+        for i, (owner, status_) in enumerate([("applicant.one", "NEW"), ("applicant.two", "NEW"), ("applicant.one", "AUTO_APPROVED")]):
             test_app_db.insert_new_application(
                 {"application_id": f"APP-U-{i}", "applicant_name": "X", "ssn_last_4": "0000",
                  "stated_annual_income": 1.0, "loan_amount_requested": 1.0, "loan_purpose": "Other",
                  "fcra_consent": True, "status": status_, "submitted_by": owner},
                 actor=owner,
             )
-        jane_apps = test_app_db.list_applications_for_user("jane")
-        assert {a["application_id"] for a in jane_apps} == {"APP-U-0", "APP-U-2"}
-        assert test_app_db.list_applications_for_user("jane", status="approved") == \
-            [a for a in jane_apps if a["application_id"] == "APP-U-2"]
+        first_apps = test_app_db.list_applications_for_user("applicant.one")
+        assert {a["application_id"] for a in first_apps} == {"APP-U-0", "APP-U-2"}
+        assert test_app_db.list_applications_for_user("applicant.one", status="approved") == \
+            [a for a in first_apps if a["application_id"] == "APP-U-2"]
         assert test_app_db.list_applications_for_user("nobody") == []
 
     def test_migration_adds_the_column_to_a_pre_existing_database(self, tmp_path):
@@ -331,7 +331,7 @@ class TestApplicationOwnership:
         try:
             record = db.get_application("APP-OLD-1")
             assert record["submitted_by"] is None
-            assert db.list_applications_for_user("jane") == []  # the old row belongs to nobody, not an error
+            assert db.list_applications_for_user("applicant.one") == []  # the old row belongs to nobody, not an error
             # re-opening (column already present) is a no-op, not an error
             ApplicationDatabase(db_path=db_path).close()
         finally:

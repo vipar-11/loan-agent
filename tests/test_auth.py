@@ -58,17 +58,17 @@ class TestPasswords:
 
     @pytest.mark.parametrize("new,error", [
         ("", "cannot be empty"), ("   ", "cannot be empty"), ("short", "at least 8"),
-        ("x" * 300, "at most 256"), ("Jane.Doe", "same as the user ID"),
+        ("x" * 300, "at most 256"), ("Some.Name", "same as the user ID"),
     ])
     def test_policy(self, new, error):
         with pytest.raises(passwords.PasswordPolicyError, match=error):
-            passwords.validate_new_password(new, "jane.doe", 8)
+            passwords.validate_new_password(new, "some.name", 8)
 
 
 class TestUserDirectory:
     def test_create_user_has_the_empty_default_password(self, test_app_db):
-        user = user_directory.create_user(test_app_db, "  Jane.Doe ", "Loan Underwriter", "  Jane   Doe ")
-        assert user["user_id"] == "jane.doe" and user["display_name"] == "Jane Doe"
+        user = user_directory.create_user(test_app_db, "  Some.Name ", "Loan Underwriter", "  Mrs.   Some   Name ")
+        assert user["user_id"] == "some.name" and user["display_name"] == "Mrs. Some Name"
         assert user["role"] == "UNDERWRITER" and user["password_hash"] is None
         assert user["must_change_password"] is True and user["is_active"] is True
         assert user_directory.create_user(test_app_db, "ops", "admin")["display_name"] == "Administrator"
@@ -79,25 +79,25 @@ class TestUserDirectory:
             user_directory.create_user(test_app_db, bad, Role.APPLICANT)
 
     def test_duplicate_and_unknown_role(self, test_app_db):
-        user_directory.create_user(test_app_db, "jane", Role.APPLICANT)
+        user_directory.create_user(test_app_db, "applicant.one", Role.APPLICANT)
         with pytest.raises(ValueError, match="already exists"):
-            user_directory.create_user(test_app_db, "JANE", Role.APPLICANT)
+            user_directory.create_user(test_app_db, "APPLICANT.ONE", Role.APPLICANT)
         with pytest.raises(ValueError, match="Unknown role"):
-            user_directory.create_user(test_app_db, "bob", "superuser")
+            user_directory.create_user(test_app_db, "applicant.two", "superuser")
 
     def test_change_password_requires_the_current_one(self, test_app_db):
         cfg = AuthConfig()
-        user_directory.create_user(test_app_db, "jane", Role.APPLICANT)
+        user_directory.create_user(test_app_db, "applicant.one", Role.APPLICANT)
         with pytest.raises(PasswordChangeError, match="current password is incorrect"):
-            user_directory.change_password(test_app_db, "jane", "not-empty", PASSWORD, cfg)
-        user_directory.change_password(test_app_db, "jane", "", PASSWORD, cfg)
+            user_directory.change_password(test_app_db, "applicant.one", "not-empty", PASSWORD, cfg)
+        user_directory.change_password(test_app_db, "applicant.one", "", PASSWORD, cfg)
         with pytest.raises(PasswordChangeError, match="current password is incorrect"):
-            user_directory.change_password(test_app_db, "jane", "", "Another-Pass-1", cfg)
+            user_directory.change_password(test_app_db, "applicant.one", "", "Another-Pass-1", cfg)
         with pytest.raises(PasswordChangeError, match="must be different"):
-            user_directory.change_password(test_app_db, "jane", PASSWORD, PASSWORD, cfg)
+            user_directory.change_password(test_app_db, "applicant.one", PASSWORD, PASSWORD, cfg)
         with pytest.raises(PasswordChangeError, match="at least"):
-            user_directory.change_password(test_app_db, "jane", PASSWORD, "short", cfg)
-        user = user_directory.change_password(test_app_db, "jane", PASSWORD, "Another-Pass-1", cfg)
+            user_directory.change_password(test_app_db, "applicant.one", PASSWORD, "short", cfg)
+        user = user_directory.change_password(test_app_db, "applicant.one", PASSWORD, "Another-Pass-1", cfg)
         assert user["must_change_password"] is False and user["password_changed_at"]
 
     def test_external_accounts_cannot_use_local_passwords(self, test_app_db):
@@ -114,72 +114,72 @@ class TestLocalPasswordVerifier:
         return LocalPasswordVerifier(test_app_db, AuthConfig(lockout_threshold=3, lockout_minutes=15))
 
     def test_empty_default_password_signs_in_restricted(self, verifier, test_app_db):
-        user_directory.create_user(test_app_db, "jane", Role.UNDERWRITER, "Jane Doe")
-        principal = verifier.verify("JANE", "")
-        assert principal.user_id == "jane" and principal.role == Role.UNDERWRITER
+        user_directory.create_user(test_app_db, "uw.one", Role.UNDERWRITER, "Mrs. Some Name")
+        principal = verifier.verify("UW.ONE", "")
+        assert principal.user_id == "uw.one" and principal.role == Role.UNDERWRITER
         assert principal.password_change_required is True
-        assert test_app_db.get_user("jane")["last_login_at"]
+        assert test_app_db.get_user("uw.one")["last_login_at"]
 
     def test_real_password(self, verifier, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.UNDERWRITER, PASSWORD)
-        assert verifier.verify("jane", PASSWORD).password_change_required is False
+        create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER, PASSWORD)
+        assert verifier.verify("uw.one", PASSWORD).password_change_required is False
         for wrong in ("", "wrong", PASSWORD.lower()):
             with pytest.raises(AuthenticationError):
-                verifier.verify("jane", wrong)
+                verifier.verify("uw.one", wrong)
 
     def test_failures_do_not_reveal_whether_the_user_exists(self, verifier, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT, PASSWORD)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT, PASSWORD)
         messages = set()
-        for user_id, pw in (("jane", "wrong"), ("nobody", "wrong"), ("nobody", ""), ("bad id!", "x")):
+        for user_id, pw in (("applicant.one", "wrong"), ("nobody", "wrong"), ("nobody", ""), ("bad id!", "x")):
             with pytest.raises(AuthenticationError) as exc:
                 verifier.verify(user_id, pw)
             messages.add(str(exc.value))
         assert len(messages) == 1
 
     def test_disabled_account_cannot_sign_in(self, verifier, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT, PASSWORD)
-        user_directory.set_active(test_app_db, "jane", False)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT, PASSWORD)
+        user_directory.set_active(test_app_db, "applicant.one", False)
         with pytest.raises(AuthenticationError):
-            verifier.verify("jane", PASSWORD)
+            verifier.verify("applicant.one", PASSWORD)
 
     def test_lockout_after_repeated_failures(self, verifier, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT, PASSWORD)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT, PASSWORD)
         for _ in range(2):
             with pytest.raises(AuthenticationError):
-                verifier.verify("jane", "wrong")
-        assert verifier.verify("jane", PASSWORD)  # success before the threshold resets the count
+                verifier.verify("applicant.one", "wrong")
+        assert verifier.verify("applicant.one", PASSWORD)  # success before the threshold resets the count
         for _ in range(3):
             with pytest.raises(AuthenticationError):
-                verifier.verify("jane", "wrong")
-        user = test_app_db.get_user("jane")
+                verifier.verify("applicant.one", "wrong")
+        user = test_app_db.get_user("applicant.one")
         assert user["locked_until"] > datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with pytest.raises(AuthenticationError):  # locked: even the right password is refused
-            verifier.verify("jane", PASSWORD)
-        test_app_db.update_user("jane", {"locked_until": "2000-01-01 00:00:00"})  # lock expired
-        assert verifier.verify("jane", PASSWORD).user_id == "jane"
+            verifier.verify("applicant.one", PASSWORD)
+        test_app_db.update_user("applicant.one", {"locked_until": "2000-01-01 00:00:00"})  # lock expired
+        assert verifier.verify("applicant.one", PASSWORD).user_id == "applicant.one"
 
     def test_reset_clears_the_lock_and_restores_the_empty_password(self, verifier, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT, PASSWORD)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT, PASSWORD)
         for _ in range(3):
             with pytest.raises(AuthenticationError):
-                verifier.verify("jane", "wrong")
-        user_directory.reset_password(test_app_db, "jane")
-        assert verifier.verify("jane", "").password_change_required is True
+                verifier.verify("applicant.one", "wrong")
+        user_directory.reset_password(test_app_db, "applicant.one")
+        assert verifier.verify("applicant.one", "").password_change_required is True
 
 
 class TestSessionManager:
     @pytest.fixture
     def sessions(self, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.UNDERWRITER, PASSWORD, "Jane Doe")
+        create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER, PASSWORD, "Mrs. Some Name")
         return SessionManager(test_app_db, AuthConfig(session_idle_minutes=30, session_max_hours=12))
 
     def _principal(self, db):
-        return user_directory.principal_for(db.get_user("jane"), "password")
+        return user_directory.principal_for(db.get_user("uw.one"), "password")
 
     def test_issue_and_resolve(self, sessions, test_app_db):
         issued = sessions.issue(self._principal(test_app_db))
         principal = sessions.resolve(issued.token)
-        assert principal.user_id == "jane" and principal.display_name == "Jane Doe"
+        assert principal.user_id == "uw.one" and principal.display_name == "Mrs. Some Name"
         assert sessions.resolve("not-a-token") is None and sessions.resolve(None) is None
         assert sessions.resolve("x" * 500) is None
 
@@ -206,11 +206,11 @@ class TestSessionManager:
 
     def test_revocation_disable_and_role_change_apply_immediately(self, sessions, test_app_db):
         issued = sessions.issue(self._principal(test_app_db))
-        user_directory.update_profile(test_app_db, "jane", role=Role.ADMINISTRATOR)
+        user_directory.update_profile(test_app_db, "uw.one", role=Role.ADMINISTRATOR)
         assert sessions.resolve(issued.token).role == Role.ADMINISTRATOR
-        user_directory.set_active(test_app_db, "jane", False)
+        user_directory.set_active(test_app_db, "uw.one", False)
         assert sessions.resolve(issued.token) is None
-        user_directory.set_active(test_app_db, "jane", True)
+        user_directory.set_active(test_app_db, "uw.one", True)
         assert sessions.resolve(issued.token) is None  # disabling revoked it for good
         second = sessions.issue(self._principal(test_app_db))
         assert sessions.revoke(second.token) is True and sessions.resolve(second.token) is None
@@ -341,9 +341,9 @@ class TestFirstSignIn:
     """The account from manage_users.py: user ID + EMPTY password, then a password must be chosen."""
 
     def test_full_flow(self, browser, test_app_db):
-        user_directory.create_user(test_app_db, "uw.jane", Role.UNDERWRITER, "Jane Doe")
+        user_directory.create_user(test_app_db, "uw.one", Role.UNDERWRITER, "Mrs. Some Name")
 
-        res = login(browser, "uw.jane", "")
+        res = login(browser, "uw.one", "")
         assert res.status_code == 200
         body = res.json()
         assert body["identity"]["password_change_required"] is True and "set a new password" in body["message"]
@@ -368,7 +368,7 @@ class TestFirstSignIn:
         assert browser.get("/desk").status_code == 200
         assert browser.get("/", follow_redirects=False).headers["location"] == "/desk"
         # and the empty password no longer works
-        assert login(TestClient(browser.app), "uw.jane", "").status_code == 401
+        assert login(TestClient(browser.app), "uw.one", "").status_code == 401
 
     def test_api_client_first_sign_in(self, app, test_app_db):
         user_directory.create_user(test_app_db, "ops", Role.ADMINISTRATOR)
@@ -384,59 +384,59 @@ class TestFirstSignIn:
 
 class TestSignIn:
     def test_wrong_credentials_get_one_generic_answer(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         answers = {(r.status_code, r.json()["detail"]) for r in (
-            login(browser, "jane", "wrong"), login(browser, "nobody", "wrong"), login(browser, "jane", ""),
+            login(browser, "applicant.one", "wrong"), login(browser, "nobody", "wrong"), login(browser, "applicant.one", ""),
         )}
         assert len(answers) == 1 and next(iter(answers))[0] == 401
-        assert "set-cookie" not in login(browser, "jane", "wrong").headers
+        assert "set-cookie" not in login(browser, "applicant.one", "wrong").headers
 
     def test_lockout_over_http(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         for _ in range(load_auth_config().lockout_threshold):
-            assert login(browser, "jane", "wrong").status_code == 401
-        assert login(browser, "jane", PASSWORD).status_code == 401
+            assert login(browser, "applicant.one", "wrong").status_code == 401
+        assert login(browser, "applicant.one", PASSWORD).status_code == 401
 
     def test_cookie_session(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT, name="Jane Applicant")
-        identity = login(browser, "jane").json()["identity"]
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT, name="Mrs. Some Name")
+        identity = login(browser, "applicant.one").json()["identity"]
         assert identity["role"] == "APPLICANT" and identity["home_path"] == "/portal"
-        assert browser.get("/api/v1/session").json()["display_name"] == "Jane Applicant"
+        assert browser.get("/api/v1/session").json()["display_name"] == "Mrs. Some Name"
         portal = browser.get("/portal")
-        assert portal.status_code == 200 and "Jane Applicant" in portal.text
+        assert portal.status_code == 200 and "Mrs. Some Name" in portal.text
 
     def test_signing_in_again_replaces_the_previous_session(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
-        login(browser, "jane")
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
+        login(browser, "applicant.one")
         first = browser.cookies.get("apex_session")
-        login(browser, "jane")
+        login(browser, "applicant.one")
         assert browser.cookies.get("apex_session") != first
         stale = TestClient(browser.app, cookies={"apex_session": first})
         assert stale.get("/api/v1/session").status_code == 401
 
     def test_bearer_token(self, app, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.UNDERWRITER)
+        create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER)
         api = TestClient(app)
-        res = api.post("/api/v1/auth/token", data={"username": "jane", "password": PASSWORD, "grant_type": "password"})
+        res = api.post("/api/v1/auth/token", data={"username": "uw.one", "password": PASSWORD, "grant_type": "password"})
         body = res.json()
         assert body["token_type"] == "bearer" and 0 < body["expires_in"] <= 12 * 3600
         h = {"Authorization": f"Bearer {body['access_token']}"}
         assert api.get("/api/v1/applications", headers=h).status_code == 200
         # bearer requests are not subject to the browser CSRF rule
         assert api.post("/api/v1/applications/APP-X/checkout", headers=h).status_code == 404
-        assert api.post("/api/v1/auth/token", data={"username": "jane", "password": "nope"}).status_code == 401
+        assert api.post("/api/v1/auth/token", data={"username": "uw.one", "password": "nope"}).status_code == 401
 
     def test_invalid_bearer_token_is_refused_even_with_a_valid_cookie(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.UNDERWRITER)
-        login(browser, "jane")
+        create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER)
+        login(browser, "uw.one")
         res = browser.get("/api/v1/applications", headers={"Authorization": "Bearer forged"})
         assert res.status_code == 401 and "invalid or has expired" in res.json()["detail"]
 
 
 class TestCsrfDefence:
     def test_cookie_sessions_need_the_header_for_changes(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.UNDERWRITER)
-        login(browser, "jane")
+        create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER)
+        login(browser, "uw.one")
         assert browser.get("/api/v1/applications").status_code == 200  # reads: fine without
         res = browser.post("/api/v1/applications/APP-X/checkout")
         assert res.status_code == 403 and CSRF_HEADER in res.json()["detail"]
@@ -451,8 +451,8 @@ class TestCsrfDefence:
 
 class TestSignOutAndPasswordChange:
     def test_sign_out(self, browser, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
-        login(browser, "jane")
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
+        login(browser, "applicant.one")
         token = browser.cookies.get("apex_session")
         res = browser.post("/api/v1/auth/logout", headers=CSRF)
         assert res.status_code == 200 and 'apex_session=""' in res.headers["set-cookie"]
@@ -462,32 +462,32 @@ class TestSignOutAndPasswordChange:
         assert browser.post("/api/v1/auth/logout", headers=CSRF).status_code == 200  # idempotent
 
     def test_bearer_sign_out(self, app, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         api = TestClient(app)
-        h = bearer_headers(api, "jane")
+        h = bearer_headers(api, "applicant.one")
         assert api.post("/api/v1/auth/logout", headers=h).status_code == 200
         assert api.get("/api/v1/session", headers=h).status_code == 401
 
     def test_password_change_signs_out_other_sessions_only(self, app, test_app_db):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         laptop, phone = TestClient(app), TestClient(app)
-        login(laptop, "jane")
-        login(phone, "jane")
+        login(laptop, "applicant.one")
+        login(phone, "applicant.one")
         res = laptop.post("/api/v1/auth/password", headers=CSRF,
                           json={"current_password": PASSWORD, "new_password": "Brand-New-Pass-7"})
         assert res.status_code == 200
         assert laptop.get("/api/v1/session").status_code == 200
         assert phone.get("/api/v1/session").status_code == 401
-        assert login(TestClient(app), "jane", "Brand-New-Pass-7").status_code == 200
+        assert login(TestClient(app), "applicant.one", "Brand-New-Pass-7").status_code == 200
 
     def test_password_change_needs_a_session(self, browser):
         res = browser.post("/api/v1/auth/password", json={"current_password": "", "new_password": PASSWORD})
         assert res.status_code == 401
 
     def test_secure_cookie_when_configured(self, test_app_db, test_checkpointer):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         app = make_app(test_app_db, test_checkpointer, auth_config=AuthConfig(cookie_secure=True, cookie_name="apex_s"))
-        res = login(TestClient(app, base_url="https://testserver"), "jane")
+        res = login(TestClient(app, base_url="https://testserver"), "applicant.one")
         assert "apex_s=" in res.headers["set-cookie"] and "Secure" in res.headers["set-cookie"]
 
 
@@ -521,22 +521,22 @@ class TestAuthenticatorChainIsTheExtensionPoint:
         assert api.get("/api/v1/applications", headers={"X-Idp-Token": "forged"}).status_code == 401
         assert api.get("/desk", headers={"X-Idp-Token": "idp-token-uw"}).status_code == 200
         # the built-in mechanisms still work behind it
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
-        assert api.get("/api/v1/session", headers=bearer_headers(api, "jane")).json()["user_id"] == "jane"
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
+        assert api.get("/api/v1/session", headers=bearer_headers(api, "applicant.one")).json()["user_id"] == "applicant.one"
 
 
 class TestSecurityLogging:
     def test_failed_sign_ins_never_log_what_was_typed_for_unknown_accounts(self, browser, test_app_db, caplog):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         with caplog.at_level("WARNING", logger="apex.auth"):
             login(browser, "Tr0ub4dor&3-typed-in-the-wrong-box", "x")
-            login(browser, "jane", "wrong")
+            login(browser, "applicant.one", "wrong")
         assert "Tr0ub4dor" not in caplog.text
-        assert "unknown user ID" in caplog.text and "user jane" in caplog.text
+        assert "unknown user ID" in caplog.text and "user applicant.one" in caplog.text
 
     def test_lockout_is_logged(self, browser, test_app_db, caplog):
-        create_user_with_password(test_app_db, "jane", Role.APPLICANT)
+        create_user_with_password(test_app_db, "applicant.one", Role.APPLICANT)
         with caplog.at_level("WARNING", logger="apex.auth"):
             for _ in range(load_auth_config().lockout_threshold):
-                login(browser, "jane", "wrong")
-        assert "Account jane locked until" in caplog.text
+                login(browser, "applicant.one", "wrong")
+        assert "Account applicant.one locked until" in caplog.text

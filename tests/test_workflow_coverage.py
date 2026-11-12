@@ -227,7 +227,7 @@ class TestWorkflowCoverage:
                 "eom_balances": [],
             },
             "categorized_transactions": [
-                {"category": "LIVING_EXPENSE_OUTFLOW_IGNORE", "amount": -100.0}
+                {"category": "OTHER_EXPENSE_IGNORE", "amount": -100.0}
             ],
             "stated_annual_income": 0.0,
             "loan_amount_requested": 10000.0,

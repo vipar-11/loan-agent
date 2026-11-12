@@ -46,12 +46,12 @@ class TestPersonaSetup:
         assert test_app_db.get_user("admin")["password_hash"]  # untouched
 
     def test_custom_ids_and_names(self, test_app_db, capsys):
-        code, out = run(test_app_db, capsys, "--applicant", "Jane.Doe", "--applicant-name", "Jane Doe",
-                        "--underwriter", "uw.smith", "--underwriter-name", "Sam Smith", "--admin", "ops.lee")
+        code, out = run(test_app_db, capsys, "--applicant", "Applicant.One", "--applicant-name", "Mrs. Some Name",
+                        "--underwriter", "uw.one", "--underwriter-name", "Mr. Some Underwriter", "--admin", "admin.one")
         assert code == 0
-        assert test_app_db.get_user("jane.doe")["display_name"] == "Jane Doe"
-        assert test_app_db.get_user("uw.smith")["role"] == "UNDERWRITER"
-        assert test_app_db.get_user("ops.lee")["display_name"] == "Administrator"
+        assert test_app_db.get_user("applicant.one")["display_name"] == "Mrs. Some Name"
+        assert test_app_db.get_user("uw.one")["role"] == "UNDERWRITER"
+        assert test_app_db.get_user("admin.one")["display_name"] == "Administrator"
         assert test_app_db.get_user("applicant") is None  # defaults only when no persona is given
 
     def test_single_persona_adds_just_that_account(self, test_app_db, capsys):
@@ -69,15 +69,15 @@ class TestPersonaSetup:
 
 class TestMaintenance:
     def test_reset_restores_the_empty_password_and_signs_out(self, test_app_db, capsys):
-        create_user_with_password(test_app_db, "uw.smith", "underwriter")
+        create_user_with_password(test_app_db, "uw.one", "underwriter")
         cfg = AuthConfig()
-        principal = LocalPasswordVerifier(test_app_db, cfg).verify("uw.smith", "Correct-Horse-9")
+        principal = LocalPasswordVerifier(test_app_db, cfg).verify("uw.one", "Correct-Horse-9")
         session = SessionManager(test_app_db, cfg).issue(principal)
 
-        code, out = run(test_app_db, capsys, "--reset", "UW.Smith")
-        assert code == 0 and "[RESET] 'uw.smith'" in out and "EMPTY (set at first sign-in)" in out
+        code, out = run(test_app_db, capsys, "--reset", "UW.One")
+        assert code == 0 and "[RESET] 'uw.one'" in out and "EMPTY (set at first sign-in)" in out
         assert SessionManager(test_app_db, cfg).resolve(session.token) is None
-        assert LocalPasswordVerifier(test_app_db, cfg).verify("uw.smith", "").password_change_required
+        assert LocalPasswordVerifier(test_app_db, cfg).verify("uw.one", "").password_change_required
 
     def test_disable_and_enable(self, test_app_db, capsys):
         run(test_app_db, capsys)
@@ -119,13 +119,13 @@ class TestScript:
         """The real entry point, in a subprocess, against a throw-away SQLite file (APP_DB_PATH)."""
         db_file = tmp_path / "app.db"
         env = {"APP_DB_PATH": str(db_file), "PATH": "/usr/bin:/bin", "PYTHONPATH": str(PROJECT_ROOT)}
-        result = subprocess.run([sys.executable, str(PROJECT_ROOT / "manage_users.py"), "--admin", "ops.lee"],
+        result = subprocess.run([sys.executable, str(PROJECT_ROOT / "manage_users.py"), "--admin", "admin.one"],
                                 capture_output=True, text=True, env=env, cwd=tmp_path, timeout=120)
         assert result.returncode == 0, result.stderr
-        assert "[CREATED] Created 'ops.lee' (Administrator)" in result.stdout
+        assert "[CREATED] Created 'admin.one' (Administrator)" in result.stdout
         db = ApplicationDatabase(db_path=db_file)
         try:
-            assert db.get_user("ops.lee")["role"] == "ADMINISTRATOR"
+            assert db.get_user("admin.one")["role"] == "ADMINISTRATOR"
         finally:
             db.close()
 

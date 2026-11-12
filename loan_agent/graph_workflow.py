@@ -378,6 +378,7 @@ def calculate_financial_ratios_node(state: LoanApplicationState) -> Dict[str, An
             "stated_monthly_income": stated_monthly_income,
             "income_variance_pct": income_variance_pct,
             "estimated_new_Loan_payment": estimated_new_payment,
+            "estimated_new_loan_payment": estimated_new_payment,
             "post_loan_dti": post_loan_dti,
             "avg_ending_balance": avg_ending_balance,
             "payment_cushion_ratio": payment_cushion_ratio,

@@ -147,7 +147,11 @@ def ratios_from_graph_state(record: Dict[str, Any], credit_report: Dict[str, Any
     stated_monthly = round(float(record.get("stated_annual_income") or 0.0) / 12.0, 2)
     bureau_debt = float(state.get("bureau_monthly_debt") or 0.0)
     undisclosed = float(state.get("undisclosed_monthly_debt") or 0.0)
-    new_pmt = float(state.get("estimated_new_Loan_payment") or (calculate_monthly_installment(loan_amount) if loan_amount > 0 else 0.0))
+    new_pmt = float(
+        state.get("estimated_new_loan_payment")
+        or state.get("estimated_new_Loan_payment")
+        or (calculate_monthly_installment(loan_amount) if loan_amount > 0 else 0.0)
+    )
     return FinancialRatios(
         fico_score=int(state.get("fico_score") or credit_report.get("fico_score") or 0),
         has_active_bankruptcy=bool(state.get("has_active_bankruptcy", False)),

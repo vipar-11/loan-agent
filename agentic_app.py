@@ -664,7 +664,11 @@ def render_adjudication_dialog(app_id: str):
     if f"ratios_{app_id}" not in st.session_state:
         bureau_debt = float(graph_state.get("bureau_monthly_debt") or 0.0)
         undisc_debt = float(graph_state.get("undisclosed_monthly_debt") or 0.0)
-        est_pmt = float(graph_state.get("estimated_new_Loan_payment") or (dynamic_pmt or 0.0))
+        est_pmt = float(
+            graph_state.get("estimated_new_loan_payment")
+            or graph_state.get("estimated_new_Loan_payment")
+            or (dynamic_pmt or 0.0)
+        )
         st.session_state[f"ratios_{app_id}"] = {
             "fico_score": graph_state.get("fico_score") or credit_rep.get("fico_score", 0),
             "has_active_bankruptcy": bool(graph_state.get("has_active_bankruptcy", False)),

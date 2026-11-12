@@ -1429,8 +1429,12 @@ class ApplicationDatabase:
     @_synchronized
     def close(self) -> None:
         """Closes the underlying database connection."""
+        global _GLOBAL_APP_DB
+        self._closed = True
         if hasattr(self, "conn") and self.conn:
             self.conn.close()
+        if _GLOBAL_APP_DB is self:
+            _GLOBAL_APP_DB = None
 
 
 _GLOBAL_APP_DB: Optional[ApplicationDatabase] = None
@@ -1449,7 +1453,12 @@ def get_application_database(
     if in_memory:
         return ApplicationDatabase(config=config, in_memory=True)
 
-    if _GLOBAL_APP_DB is not None and not force_new:
+    if (
+        _GLOBAL_APP_DB is not None
+        and not force_new
+        and not getattr(_GLOBAL_APP_DB, "_closed", False)
+        and (config is None or getattr(_GLOBAL_APP_DB, "config", None) == config)
+    ):
         return _GLOBAL_APP_DB
 
     _GLOBAL_APP_DB = ApplicationDatabase(config=config, in_memory=False)

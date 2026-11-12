@@ -35,6 +35,7 @@ class LoanApplicationState(TypedDict, total=False):
     stated_monthly_income: Optional[float]
     income_variance_pct: Optional[float]
     estimated_new_Loan_payment: Optional[float]
+    estimated_new_loan_payment: Optional[float]
     post_loan_dti: Optional[float]
     avg_ending_balance: Optional[float]
     payment_cushion_ratio: Optional[float]

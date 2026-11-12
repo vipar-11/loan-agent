@@ -73,8 +73,8 @@ class UserIdentity(BaseModel):
     sign-in mechanism) plus, for the browser workbench, the tab it is calling from.
     """
 
-    user_id: str = Field(..., examples=["uw.jane"], description="Stable user ID of the signed-in user.")
-    display_name: str = Field(..., examples=["Jane Doe"])
+    user_id: str = Field(..., examples=["uw.one"], description="Stable user ID of the signed-in user.")
+    display_name: str = Field(..., examples=["Mrs. Some Name"])
     role: str = Field(..., examples=["UNDERWRITER"])
     role_label: str = Field(..., examples=["Loan Underwriter"])
     permissions: List[str] = Field(default_factory=list, examples=[["application:read", "application:underwrite"]])
@@ -125,13 +125,13 @@ class UserIdentity(BaseModel):
 class SignupRequest(BaseModel):
     """Self-service account creation — always the Loan Applicant role; no other role can be self-granted."""
 
-    user_id: str = Field(..., min_length=1, max_length=64, examples=["jane.doe"])
+    user_id: str = Field(..., min_length=1, max_length=64, examples=["applicant.one"])
     password: str = Field(..., min_length=1, max_length=256)
-    display_name: str = Field("", max_length=120, examples=["Jane Doe"])
+    display_name: str = Field("", max_length=120, examples=["Mrs. Some Name"])
 
 
 class LoginRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64, examples=["uw.jane"])
+    user_id: str = Field(..., min_length=1, max_length=64, examples=["uw.one"])
     password: str = Field(
         "", max_length=256,
         description="Your password.",

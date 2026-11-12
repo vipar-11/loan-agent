@@ -104,15 +104,15 @@ class TestDatabaseQuery:
 
     def test_decided_by_matches_the_user_id_not_the_display_name(self, test_app_db):
         rows = [
-            record("APP-1", "2026-01-05 09:00:00", status="HUMAN_APPROVED", officer_user_id="uw.jane", officer="J. Smith"),
-            record("APP-2", "2026-01-05 10:00:00", status="HUMAN_DENIED", officer_user_id="uw.john", officer="J. Smith"),
+            record("APP-1", "2026-01-05 09:00:00", status="HUMAN_APPROVED", officer_user_id="uw.one", officer="Mr. Some Underwriter"),
+            record("APP-2", "2026-01-05 10:00:00", status="HUMAN_DENIED", officer_user_id="uw.two", officer="Mr. Some Underwriter"),
             record("APP-3", "2026-01-05 11:00:00", status="AUTO_APPROVED", officer="AI Agent (Policy Underwriter)"),
-            record("APP-4", "2026-01-05 12:00:00", status="HUMAN_APPROVED", officer="J. Smith"),  # legacy: no user ID
+            record("APP-4", "2026-01-05 12:00:00", status="HUMAN_APPROVED", officer="Mr. Some Underwriter"),  # legacy: no user ID
         ]
         for r in rows:
             test_app_db.insert_new_application(r, actor="TEST")
-        assert self.ids(test_app_db, ApplicationFilters(decided_by="uw.jane"), status="all") == ["APP-1"]
-        assert self.ids(test_app_db, ApplicationFilters(decided_by="uw.john"), status="all") == ["APP-2"]
+        assert self.ids(test_app_db, ApplicationFilters(decided_by="uw.one"), status="all") == ["APP-1"]
+        assert self.ids(test_app_db, ApplicationFilters(decided_by="uw.two"), status="all") == ["APP-2"]
 
     @pytest.mark.parametrize("filters", [
         ApplicationFilters(min_amount=20000, max_amount=10000),
@@ -162,10 +162,10 @@ class TestFiltersRunInTheDatabase:
             raise AssertionError("queue listing loaded every application instead of querying with filters")
 
         app = make_app(test_app_db, test_checkpointer)
-        create_user_with_password(test_app_db, "uw.jane", Role.UNDERWRITER, PASSWORD)
+        create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER, PASSWORD)
         test_app_db.insert_new_application(dict(record("APP-P1", "2026-01-05 09:00:00")), actor="TEST")
         client = TestClient(app)
-        headers = bearer_headers(client, "uw.jane", PASSWORD)
+        headers = bearer_headers(client, "uw.one", PASSWORD)
         monkeypatch.setattr(ApplicationDatabase, "list_applications", forbidden)
         for params in ({"status": "pending_review", "sort": "oldest", "q": "borrower"},
                        {"status": "adjudicated", "decided_by_me": "true"}, {}):
@@ -178,8 +178,8 @@ class TestDecidedByColumn:
         test_app_db.insert_new_application(dict(record("APP-1", "2026-01-05 09:00:00")), actor="TEST")
         assert test_app_db.get_application("APP-1")["decided_by"] is None
         test_app_db.update_application("APP-1", {"status": "HUMAN_APPROVED", "adjudication": {
-            "decision": "HUMAN_APPROVED", "officer": "J. Smith", "officer_user_id": "uw.jane"}}, actor="TEST")
-        assert test_app_db.get_application("APP-1")["decided_by"] == "uw.jane"
+            "decision": "HUMAN_APPROVED", "officer": "Mr. Some Underwriter", "officer_user_id": "uw.one"}}, actor="TEST")
+        assert test_app_db.get_application("APP-1")["decided_by"] == "uw.one"
 
     def test_backfilled_for_determinations_recorded_before_the_column_existed(self, tmp_path):
         import json
@@ -195,7 +195,7 @@ class TestDecidedByColumn:
             "loan_purpose TEXT NOT NULL, fcra_consent INTEGER NOT NULL, status TEXT NOT NULL, submitted_at TEXT NOT NULL, "
             "updated_at TEXT NOT NULL, adjudication TEXT, graph_state TEXT)"
         )
-        for app_id, adjudication in (("APP-H", {"officer": "J", "officer_user_id": "uw.jane"}),
+        for app_id, adjudication in (("APP-H", {"officer": "U", "officer_user_id": "uw.one"}),
                                      ("APP-A", {"officer": "AI Agent"}), ("APP-N", None)):
             conn.execute(
                 "INSERT INTO loan_applications VALUES (?, 'X', '0000', 1, 1, 'Other', 1, 'HUMAN_APPROVED', "
@@ -207,8 +207,8 @@ class TestDecidedByColumn:
         db = ApplicationDatabase(db_path=path)
         try:
             assert {a: db.get_application(a)["decided_by"] for a in ("APP-H", "APP-A", "APP-N")} == \
-                {"APP-H": "uw.jane", "APP-A": None, "APP-N": None}
-            assert [r["application_id"] for r in query_applications(db, "all", ApplicationFilters(decided_by="uw.jane"))] \
+                {"APP-H": "uw.one", "APP-A": None, "APP-N": None}
+            assert [r["application_id"] for r in query_applications(db, "all", ApplicationFilters(decided_by="uw.one"))] \
                 == ["APP-H"]
         finally:
             db.close()
@@ -220,20 +220,20 @@ class TestDecidedByColumn:
 @pytest.fixture
 def api(test_app_db, test_checkpointer):
     app = make_app(test_app_db, test_checkpointer)
-    create_user_with_password(test_app_db, "uw.jane", Role.UNDERWRITER, PASSWORD, "J. Smith")
-    create_user_with_password(test_app_db, "uw.john", Role.UNDERWRITER, PASSWORD, "J. Smith")  # same display name
-    create_user_with_password(test_app_db, "ops.lee", Role.ADMINISTRATOR, PASSWORD, "Lee Ops")
+    create_user_with_password(test_app_db, "uw.one", Role.UNDERWRITER, PASSWORD, "Mr. Some Underwriter")
+    create_user_with_password(test_app_db, "uw.two", Role.UNDERWRITER, PASSWORD, "Mr. Some Underwriter")  # same display name
+    create_user_with_password(test_app_db, "admin.one", Role.ADMINISTRATOR, PASSWORD, "Ms. Some Admin")
     rows = [
         # pending review, deliberately inserted newest-first (the order a naive listing would show them)
-        record("APP-P3", "2026-01-07 09:00:00", name="Carol Newest", purpose="Medical Expenses", amount=35000),
-        record("APP-P2", "2026-01-06 09:00:00", name="Bob Middle", purpose="Home Improvement", amount=15000),
-        record("APP-P1", "2026-01-05 09:00:00", name="Alice Oldest", purpose="Home Improvement", amount=40000),
+        record("APP-P3", "2026-01-07 09:00:00", name="Ms. Newest Some Name", purpose="Medical Expenses", amount=35000),
+        record("APP-P2", "2026-01-06 09:00:00", name="Mr. Middle Some Name", purpose="Home Improvement", amount=15000),
+        record("APP-P1", "2026-01-05 09:00:00", name="Mrs. Oldest Some Name", purpose="Home Improvement", amount=40000),
         # adjudicated
-        record("APP-D1", "2026-01-02 09:00:00", name="Dan Jane-Approved", status="HUMAN_APPROVED",
-               officer_user_id="uw.jane", officer="J. Smith"),
-        record("APP-D2", "2026-01-03 09:00:00", name="Eve John-Denied", status="HUMAN_DENIED",
-               officer_user_id="uw.john", officer="J. Smith"),
-        record("APP-D3", "2026-01-04 09:00:00", name="Fay Auto", status="AUTO_APPROVED", officer="AI Agent"),
+        record("APP-D1", "2026-01-02 09:00:00", name="Mr. First Approved Name", status="HUMAN_APPROVED",
+               officer_user_id="uw.one", officer="Mr. Some Underwriter"),
+        record("APP-D2", "2026-01-03 09:00:00", name="Ms. Second Denied Name", status="HUMAN_DENIED",
+               officer_user_id="uw.two", officer="Mr. Some Underwriter"),
+        record("APP-D3", "2026-01-04 09:00:00", name="Dr. Auto Some Name", status="AUTO_APPROVED", officer="AI Agent"),
     ]
     for r in rows:
         test_app_db.insert_new_application(r, actor="TEST")
@@ -250,10 +250,10 @@ def listing(api, user_id: str, **params) -> List[str]:
 
 class TestPendingQueueOrder:
     def test_pending_review_queue_oldest_first(self, api):
-        assert listing(api, "uw.jane", status="pending_review", sort="oldest") == ["APP-P1", "APP-P2", "APP-P3"]
+        assert listing(api, "uw.one", status="pending_review", sort="oldest") == ["APP-P1", "APP-P2", "APP-P3"]
 
     def test_default_order_is_unchanged_for_existing_clients(self, api):
-        assert listing(api, "uw.jane", status="pending_review") == ["APP-P3", "APP-P2", "APP-P1"]
+        assert listing(api, "uw.one", status="pending_review") == ["APP-P3", "APP-P2", "APP-P1"]
 
     def test_desk_requests_the_pending_queue_oldest_first(self, api):
         js = api.get("/static/js/desk.js").text
@@ -263,22 +263,22 @@ class TestPendingQueueOrder:
 class TestMetadataFilters:
     def test_each_filter(self, api):
         base = {"status": "pending_review", "sort": "oldest"}
-        assert listing(api, "uw.jane", **base, q="bob") == ["APP-P2"]
-        assert listing(api, "uw.jane", **base, q="app-p3") == ["APP-P3"]
-        assert listing(api, "uw.jane", **base, loan_purpose="Home Improvement") == ["APP-P1", "APP-P2"]
-        assert listing(api, "uw.jane", **base, min_amount=30000) == ["APP-P1", "APP-P3"]
-        assert listing(api, "uw.jane", **base, max_amount=15000) == ["APP-P2"]
-        assert listing(api, "uw.jane", **base, submitted_from="2026-01-06") == ["APP-P2", "APP-P3"]
-        assert listing(api, "uw.jane", **base, submitted_to="2026-01-05") == ["APP-P1"]
+        assert listing(api, "uw.one", **base, q="middle") == ["APP-P2"]
+        assert listing(api, "uw.one", **base, q="app-p3") == ["APP-P3"]
+        assert listing(api, "uw.one", **base, loan_purpose="Home Improvement") == ["APP-P1", "APP-P2"]
+        assert listing(api, "uw.one", **base, min_amount=30000) == ["APP-P1", "APP-P3"]
+        assert listing(api, "uw.one", **base, max_amount=15000) == ["APP-P2"]
+        assert listing(api, "uw.one", **base, submitted_from="2026-01-06") == ["APP-P2", "APP-P3"]
+        assert listing(api, "uw.one", **base, submitted_to="2026-01-05") == ["APP-P1"]
 
     def test_filters_compose_and_keep_the_order(self, api):
-        ids = listing(api, "uw.jane", status="pending_review", sort="oldest",
+        ids = listing(api, "uw.one", status="pending_review", sort="oldest",
                       loan_purpose="Home Improvement", min_amount=10000, submitted_to="2026-01-06")
         assert ids == ["APP-P1", "APP-P2"]
 
     def test_archive_outcome_filter(self, api):
-        assert listing(api, "uw.jane", status="approved", sort="oldest") == ["APP-D1", "APP-D3"]
-        assert listing(api, "uw.jane", status="rejected") == ["APP-D2"]
+        assert listing(api, "uw.one", status="approved", sort="oldest") == ["APP-D1", "APP-D3"]
+        assert listing(api, "uw.one", status="rejected") == ["APP-D2"]
 
     @pytest.mark.parametrize("params", [
         {"min_amount": 20000, "max_amount": 10000},
@@ -289,43 +289,43 @@ class TestMetadataFilters:
         {"min_amount": -1},
     ])
     def test_invalid_filters_are_422(self, api, params):
-        res = api.get("/api/v1/applications", params=params, headers=bearer_headers(api, "uw.jane", PASSWORD))
+        res = api.get("/api/v1/applications", params=params, headers=bearer_headers(api, "uw.one", PASSWORD))
         assert res.status_code == 422
 
 
 class TestDecidedByMe:
     def test_each_underwriter_sees_only_their_own_determinations(self, api):
-        """Matched on user ID: both underwriters are displayed as 'J. Smith'."""
-        assert listing(api, "uw.jane", status="adjudicated", decided_by_me="true") == ["APP-D1"]
-        assert listing(api, "uw.john", status="adjudicated", decided_by_me="true") == ["APP-D2"]
+        """Matched on user ID: both underwriters are displayed as 'Mr. Some Underwriter'."""
+        assert listing(api, "uw.one", status="adjudicated", decided_by_me="true") == ["APP-D1"]
+        assert listing(api, "uw.two", status="adjudicated", decided_by_me="true") == ["APP-D2"]
 
     def test_combines_with_other_filters(self, api):
-        assert listing(api, "uw.jane", status="adjudicated", decided_by_me="true", q="dan") == ["APP-D1"]
-        assert listing(api, "uw.jane", status="adjudicated", decided_by_me="true", q="eve") == []
+        assert listing(api, "uw.one", status="adjudicated", decided_by_me="true", q="first") == ["APP-D1"]
+        assert listing(api, "uw.one", status="adjudicated", decided_by_me="true", q="second") == []
 
     def test_automated_decisions_belong_to_nobody(self, api):
-        everything = listing(api, "uw.jane", status="adjudicated")
+        everything = listing(api, "uw.one", status="adjudicated")
         assert "APP-D3" in everything
-        assert "APP-D3" not in listing(api, "uw.jane", status="adjudicated", decided_by_me="true")
+        assert "APP-D3" not in listing(api, "uw.one", status="adjudicated", decided_by_me="true")
 
     def test_administrator_has_made_no_credit_decisions(self, api):
-        assert listing(api, "ops.lee", status="adjudicated", decided_by_me="true") == []
+        assert listing(api, "admin.one", status="adjudicated", decided_by_me="true") == []
 
     def test_the_determination_really_records_the_user_id(self, api, test_app_db):
         """End to end: a decision made through the API is found by that underwriter's 'decided by me' filter."""
-        h = bearer_headers(api, "uw.john", PASSWORD)
+        h = bearer_headers(api, "uw.two", PASSWORD)
         res = api.post("/api/v1/applications/APP-P1/decision", headers=h,
                        json={"decision": "APPROVE", "notes": "Verified W-2 and pay stubs."})
         # the seeded record has no workflow checkpoint; the runner synthesizes the final state, so it still settles
         assert res.status_code == 200, res.text
-        assert "APP-P1" in listing(api, "uw.john", status="adjudicated", decided_by_me="true")
-        assert "APP-P1" not in listing(api, "uw.jane", status="adjudicated", decided_by_me="true")
+        assert "APP-P1" in listing(api, "uw.two", status="adjudicated", decided_by_me="true")
+        assert "APP-P1" not in listing(api, "uw.one", status="adjudicated", decided_by_me="true")
 
 
 class TestDeskFilterControls:
     def test_both_queues_have_filter_bars(self, api, test_app_db):
         browser = TestClient(api.app)
-        assert browser.post("/api/v1/auth/login", json={"user_id": "uw.jane", "password": PASSWORD}).status_code == 200
+        assert browser.post("/api/v1/auth/login", json={"user_id": "uw.one", "password": PASSWORD}).status_code == 200
         html = browser.get("/desk").text
         for form in ('id="pending-filters"', 'id="archive-filters"'):
             assert form in html

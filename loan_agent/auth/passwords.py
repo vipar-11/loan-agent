@@ -62,7 +62,7 @@ def burn_verification_time(password: str) -> None:
     global _DUMMY_HASH
     if _DUMMY_HASH is None:
         _DUMMY_HASH = hash_password("not-a-real-password")
-    verify_password(password or "", _DUMMY_HASH)
+    verify_password((password or "")[:MAX_PASSWORD_LENGTH], _DUMMY_HASH)
 
 
 class PasswordPolicyError(ValueError):

@@ -26,7 +26,7 @@ from loan_agent.auth import users as user_directory
 from loan_agent.mock_apis import APPLICANT_PROFILES
 from tests.conftest import bearer_headers, create_user_with_password
 
-ADMIN, APPLICANT, UNDERWRITER, PASSWORD = "ops.admin", "jane.applicant", "uw.smith", "Correct-Horse-9"
+ADMIN, APPLICANT, UNDERWRITER, PASSWORD = "ops.admin", "applicant.one", "uw.one", "Correct-Horse-9"
 
 
 @pytest.fixture
@@ -35,8 +35,8 @@ def http(test_app_db, test_checkpointer) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = lambda: test_app_db
     app.dependency_overrides[get_checkpointer] = lambda: test_checkpointer
     create_user_with_password(test_app_db, ADMIN, Role.ADMINISTRATOR, PASSWORD, "Ops Admin")
-    create_user_with_password(test_app_db, APPLICANT, Role.APPLICANT, PASSWORD, "Jane Applicant")
-    create_user_with_password(test_app_db, UNDERWRITER, Role.UNDERWRITER, PASSWORD, "Sam Smith")
+    create_user_with_password(test_app_db, APPLICANT, Role.APPLICANT, PASSWORD, "Mrs. Some Applicant")
+    create_user_with_password(test_app_db, UNDERWRITER, Role.UNDERWRITER, PASSWORD, "Mr. Some Underwriter")
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -194,7 +194,7 @@ class TestTraceLoanCli:
         assert "WORKFLOW STATE & FINANCIAL METRICS" in out and "Post-Loan DTI" in out
         assert "Workflow Execution Log:" in out
         assert "APPLICATION DATABASE AUDIT TRAIL" in out and "APPLICATION_SUBMITTED" in out
-        assert "HUMAN_REVIEW_DECISION" in out and "Sam Smith (uw.smith)" in out  # the signed-in officer
+        assert "HUMAN_REVIEW_DECISION" in out and "Mr. Some Underwriter (uw.one)" in out  # the signed-in officer
 
     def test_trace_before_workflow_runs(self, http, cli, capsys):
         app_id = submit(http, "MRS_SOME_NAME")

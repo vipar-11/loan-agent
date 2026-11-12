@@ -348,7 +348,7 @@ Every workbench page and API endpoint requires a signed-in user — except the s
 | **Loan Underwriter** | `/desk` | Review queue & archive, review dossier, ratio what-ifs, check files out, record determinations. | Administrator (`manage_users.py`) |
 | **Administrator** | `/admin` | Administrator console (status, job monitor, schedule configuration, partner intake), run the underwriting workflow, force-release checkouts, read applications & audit trails (admin CLI). **No credit authority** — cannot open a dossier or record a determination (segregation of duties). | Administrator (`manage_users.py`) |
 
-Endpoints and pages require *permissions* (`loan_agent/auth/roles.py`), never roles directly, so adding a role or mapping SSO groups onto roles touches only that file. Pages outside the user's role are absent from the navigation, and opening one gives **exactly the same response as a page that does not exist** (404 *Page not found* — same status, headers and bytes; signed-out visitors are sent to sign-in for both), so users cannot tell which other pages exist. Neither that page nor the API's `403` (*"You do not have access to this resource."*) reveals the user's role or the access a resource would need. Audit-trail actors are the signed-in users — e.g. `Jane Doe (jane.doe)` submitted, `Sam Smith (uw.smith)` checked out and approved — and client-supplied names (`officer`, `updated_by`, `actor`) are no longer accepted.
+Endpoints and pages require *permissions* (`loan_agent/auth/roles.py`), never roles directly, so adding a role or mapping SSO groups onto roles touches only that file. Pages outside the user's role are absent from the navigation, and opening one gives **exactly the same response as a page that does not exist** (404 *Page not found* — same status, headers and bytes; signed-out visitors are sent to sign-in for both), so users cannot tell which other pages exist. Neither that page nor the API's `403` (*"You do not have access to this resource."*) reveals the user's role or the access a resource would need. Audit-trail actors are the signed-in users — e.g. `Mrs. Some Name (applicant.one)` submitted, `Mr. Some Underwriter (uw.one)` checked out and approved — and client-supplied names (`officer`, `updated_by`, `actor`) are no longer accepted.
 
 #### Loan Applicants: self-service sign-up
 
@@ -364,9 +364,9 @@ which is how **My Applications** (`/status`) knows which files are theirs — se
 
 ```bash
 python manage_users.py                     # creates 'underwriter' and 'admin' (empty default password)
-python manage_users.py --underwriter uw.smith --underwriter-name "Sam Smith" --admin ops.lee
+python manage_users.py --underwriter uw.one --underwriter-name "Mr. Some Underwriter" --admin admin.one
 python manage_users.py --underwriter uw.second   # add another account for a persona
-python manage_users.py --reset uw.smith          # back to the empty default password (signs the user out everywhere)
+python manage_users.py --reset uw.one            # back to the empty default password (signs the user out everywhere)
 python manage_users.py --disable uw.second       # / --enable
 python manage_users.py --list
 ```
@@ -408,19 +408,20 @@ The system includes 3 pre-configured demo borrower profiles accessible via the *
 │ 1. Mrs. Some Name — Clean Auto-Approve (Prime)                              │
 │    • Requested: $15,000 | Stated Income: $96,000/yr ($8,000/mo)             │
 │    • FICO: 745 | Delinquencies: 0 | NSF Fees: 0                             │
-│    • Public Records: Discharged Bankruptcy from 2019 (Compliant)            │
-│    • Result: Passes all criteria, healthy DTI (< 36%), 4.2x cushion.        │
+│    • Public Records: Clean (0)                                              │
+│    • Result: Passes all criteria, healthy DTI (24.98% < 36%), 13.05x cushion│
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 2. Mr. Some Name — Hard Knockout Denial (Subprime)                          │
 │    • Requested: $20,000 | Stated Income: $60,000/yr ($5,000/mo)             │
-│    • FICO: 580 (Violates Rule 2.1 < 620)                                    │
-│    • Active Bankruptcy (Violates Rule 2.3) | 2x Delinquencies (Rule 2.3)    │
-│    • 3x NSF Events in 90 Days (Violates Rule 2.4 > 2)                       │
+│    • FICO: 595 (Violates Rule 2.1 < 620)                                    │
+│    • 3x Delinquencies in 12M (Violates Rule 2.3 > 1)                        │
+│    • 4x NSF Events in 90 Days (Violates Rule 2.4 > 2) | DTI: 63.96% (> 45%) │
 │    • Result: Immediate ECOA Adverse Action Denial with specific citations.   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 3. Ms. Some Name — Manual Underwriting Escalation (Nuanced / High-Value)    │
 │    • Requested: $35,000 (Exceeds $25,000 Tier 1 Gate per Rule 4.2)          │
 │    • Stated Income: $110,000/yr | FICO: 710                                 │
+│    • Public Records: Discharged Bankruptcy from 2019 (Compliant)            │
 │    • Undisclosed BNPL detected (Klarna / Affirm payments)                   │
 │    • Result: Routes to ESCALATE for human underwriter executive sign-off.   │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -690,7 +691,7 @@ pytest tests/test_integration_workflow.py
 
 #### C. Adverse Public Records (Active vs. Discharged Bankruptcies)
 * **Active Bankruptcy**: The borrower is currently undergoing legal bankruptcy proceedings (Chapter 7 liquidation or Chapter 13 repayment). Federal banking law and Apex Policy consider an active bankruptcy a **hard knockout** because the debtor is under court supervision and cannot legally incur new unapproved debt.
-* **Discharged Bankruptcy**: The court has concluded the bankruptcy and permanently released the debtor from liability. Per Apex Policy (Rule 2.3), historical bankruptcies that have been **discharged for $\ge 5$ years** with subsequent clean credit re-establishment (e.g., Mrs. Some Name's 2018 discharge) are **permitted** and do not trigger a knockout.
+* **Discharged Bankruptcy**: The court has concluded the bankruptcy and permanently released the debtor from liability. Per Apex Policy (Rule 2.3), historical bankruptcies that have been **discharged for $\ge 5$ years** with subsequent clean credit re-establishment (e.g., Ms. Some Name's 2019 discharge) are **permitted** and do not trigger a knockout.
 
 ---
 

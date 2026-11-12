@@ -6,9 +6,9 @@ Each user signs in with their user ID and an empty password, and is then require
 
 Executable via:
   python manage_users.py                                   # creates 'applicant', 'underwriter', 'admin'
-  python manage_users.py --applicant jane.doe --applicant-name "Jane Doe" --underwriter uw.smith --admin ops.lee
+  python manage_users.py --applicant applicant.one --applicant-name "Mrs. Some Name" --underwriter uw.one --admin admin.one
   python manage_users.py --underwriter uw.second           # add another underwriter
-  python manage_users.py --reset uw.smith                  # back to the empty default password
+  python manage_users.py --reset uw.one                    # back to the empty default password
   python manage_users.py --disable uw.second               # / --enable
   python manage_users.py --list
 """
