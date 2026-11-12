@@ -103,8 +103,9 @@ def record_human_decision(
     """
     Resumes the paused graph with the officer's determination.
 
-    The caller's identity must hold the file's review checkout (taken when the file was opened in the Underwriter
-    Desk); if nobody has it checked out, one is taken implicitly for this request. The checkout is claimed atomically,
+    The determination is recorded against the signed-in underwriter (`identity`), who must hold the file's review
+    checkout (taken when the file was opened in the Underwriter Desk); if nobody has it checked out, one is taken
+    implicitly for this request. The checkout is claimed atomically,
     so exactly one determination is recorded per file, and it is dropped once the determination is persisted.
     Never waits on an in-progress initiate_workflow batch (it only processes NEW files).
 
@@ -117,7 +118,8 @@ def record_human_decision(
             application_id=app_id,
             decision=payload.decision,
             notes=payload.notes,
-            officer=payload.officer,
+            officer=identity.display_name,
+            officer_user_id=identity.user_id,
             app_db=db,
             checkpointer=checkpointer,
         )

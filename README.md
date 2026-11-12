@@ -21,6 +21,10 @@ The system seamlessly combines:
    - Autonomous multi-agent pipeline using LangGraph and Pydantic structured output for semantic bank reconciliation and dynamic policy evaluation without hardcoded credit policies.
 4. **Single Source of Truth Credit Policy (`policy_v1.md`)**:
    - All underwriting tiers, knockout floors, and escalation gates are maintained in Markdown, guaranteeing zero policy hardcoding in business logic.
+5. **Authentication & Role-Based Access (`loan_agent/auth/`, `api/security.py`)**:
+   - User ID / password sign-in for three roles — **Loan Applicant**, **Loan Underwriter**, **Administrator** — with server-side sessions, account lockout, and a pluggable authenticator chain ready for SSO / token-based sign-in. Underwriter and Administrator accounts are provisioned with `manage_users.py` (empty default password, chosen by the user at first sign-in); Loan Applicants may also **create their own account** (`/signup`). See [Authentication & Roles](#5-authentication--role-based-access-control).
+6. **Applicant Self-Service (`/signup`, `/status`, `loan_agent/sla.py`)**:
+   - Loan Applicants sign themselves up, submit applications under their own account, and track every submission's status — *Received → Under Review → Approved / Denied* — on the **My Applications** page, including the decision SLA (**a determination within 3 business days**, skipping weekends) and, on a denial, the ECOA adverse action reasons.
 
 ---
 
@@ -29,11 +33,15 @@ The system seamlessly combines:
 ```mermaid
 flowchart TD
     subgraph UI["FastAPI Agentic Service (api/) — Workbench Pages + JSON API"]
+        Login["🔐 Sign-in (/login)\n- User ID & password\n- First-time password setup"]
         Portal["👤 Applicant Portal (/portal)\n- Live Payment Sizer\n- FCRA/GLBA Consent\n- Persona Autofill"]
         Desk["🛡️ Underwriter Review Desk (/desk)\n- New / Pending / Archive Queues\n- Modal Dossier\n- HitL Adjudication"]
+        Auth["🛂 Authentication & RBAC (security.py, loan_agent/auth)\n- Cookie / bearer sessions\n- Applicant · Underwriter · Administrator"]
         API["🔌 REST API (/api/v1)\n- routers → services → loan_agent\n- OpenAPI at /docs"]
-        Portal --> API
-        Desk --> API
+        Login --> Auth
+        Portal --> Auth
+        Desk --> Auth
+        Auth --> API
     end
 
     subgraph Manual["Streamlit Manual Workbench (app.py) — non-agentic baseline"]
@@ -41,7 +49,7 @@ flowchart TD
     end
 
     subgraph Persist["Persistence (dbconfig.ini: SQLite or PostgreSQL)"]
-        AppDB["🗄️ Application DB (db.py)\n- loan_applications\n- loan_audit_trail"]
+        AppDB["🗄️ Application DB (db.py)\n- loan_applications\n- loan_audit_trail\n- app_users / auth_sessions"]
         CkptDB["💾 LangGraph Checkpointer (checkpointer.py)\n- one thread per application\n- HitL breakpoint state"]
     end
 
@@ -68,6 +76,7 @@ flowchart TD
     end
 
     API -->|Persist & audit| AppDB
+    Auth -->|Users & sessions| AppDB
     API -->|process_application / resume_with_human_decision| Agentic
     Agentic --> CkptDB
     Agentic -->|Parallel fetch| Data
@@ -90,28 +99,32 @@ loan-agent/
 ├── policy_v1.md                # Apex Financial Credit Underwriting Policy (US-2026)
 ├── dbconfig.ini                # Storage mode (local SQLite / remote PostgreSQL) & database locations
 ├── batch_intake.ini            # Partner batch intake: monitored folders, timings, limits, approved partners
+├── auth.ini                    # Sign-in sessions (idle / absolute timeout), cookie, lockout, password policy
 ├── partner_kit/                # Published to approved partners
 │   ├── LOAN_BATCH_FILE_SPEC.md # CSV batch file specification (v1.0): delivery, columns, validation, results
 │   └── loan_batch_sample.csv   # Sample batch file
-├── setup_env.sh                # Dev sandbox bootstrap (executable): venv + activation + both requirements files
+├── setup_env.sh                # Dev sandbox bootstrap (executable): venv + requirements + intake folders + default accounts
 ├── run_api.py                  # Launches the FastAPI agentic service (uvicorn)
+├── manage_users.py             # Sets up sign-in accounts for the Underwriter & Administrator personas, resets, enable/disable
 ├── initiate_workflow.py        # CLI/cron scheduler: runs the approval workflow via POST /api/v1/workflows/run
 ├── list_loans.py               # Admin CLI: queries applications / status summary via GET /api/v1/applications & /stats
 ├── trace_loan.py               # Admin CLI: consolidated audit trace via GET /api/v1/applications/{id} [+ /audit-trail]
 ├── app.py                      # Manual (non-agentic) credit underwriting workbench — Streamlit
-├── agentic_app.py              # Agentic underwriting workbench — Streamlit (legacy; co-exists with api/ during migration)
+├── agentic_app.py              # Retired Streamlit agentic workbench: redirects visitors to the FastAPI workbench
 ├── .streamlit/
 │   └── config.toml             # Streamlit theme for app.py / agentic_app.py
 ├── api/                        # ⭐ Autonomous agentic underwriting service — FastAPI
 │   ├── main.py                 # App factory, lifespan (DB + checkpointer warm-up), router mounting
-│   ├── dependencies.py         # DI providers (application DB, checkpointer), establish_user_identity(), pipeline lock
+│   ├── dependencies.py         # DI providers: DB, checkpointer, pipeline lock; sign-in seam (resolve_principal), identity, permissions
+│   ├── security.py             # Request authenticators (bearer token, session cookie + CSRF) — the SSO / token extension point
 │   ├── schemas.py              # Pydantic request/response contracts (the public API surface)
 │   ├── routers/                # HTTP layer only — validation, status codes, serialization
 │   │   ├── applications.py     # /api/v1/applications: submit, list, detail, dossier, ratios, workflow, checkout, decision
 │   │   ├── workflows.py        # /api/v1/workflows/run (fire-and-forget), /workflows/runs/{id}, /api/v1/stats
 │   │   ├── admin.py            # /api/v1/admin: status summary, job health, run history, schedule config, batch intake
 │   │   ├── reference.py        # /api/v1/health, /system, /personas, /calculator, /policy
-│   │   └── pages.py            # / , /portal, /desk (Jinja2 server-rendered workbench)
+│   │   ├── auth.py             # /api/v1/auth: signup, login (cookie), token (bearer), logout, password, providers; /api/v1/session
+│   │   └── pages.py            # / , /login, /signup, /portal, /status, /desk, /admin (Jinja2; sign-in & role checks)
 │   ├── services/               # Orchestration layer — no HTTP, no UI
 │   │   ├── applications.py     # Submission, reference IDs, listing/stage filters, queue stats, projections
 │   │   ├── dossier.py          # Review dossier assembly + deterministic ratio recalculation
@@ -120,18 +133,27 @@ loan-agent/
 │   │   ├── batch_intake.py     # Partner batch intake: inbox monitor, CSV validation, submission, results files
 │   │   ├── scheduler.py        # initiate_workflow run log, health evaluation, persisted interval, periodic trigger
 │   │   └── policy.py           # policy_v1.md loader + Markdown → HTML
-│   ├── templates/              # base.html, portal.html, desk.html, admin.html
-│   └── static/                 # apex.css (enterprise light theme), api.js, portal.js, desk.js, admin.js
+│   ├── templates/              # base.html, login.html, signup.html, not_found.html, portal.html, status.html, desk.html, admin.html
+│   └── static/                 # apex.css (enterprise light theme), api.js, login.js, signup.js, portal.js, status.js, desk.js, admin.js
 ├── loan_agent/                 # Core reusable domain package (UI-agnostic)
 │   ├── __init__.py             # Package exports & public API
+│   ├── auth/                   # Authentication & authorization core (no HTTP)
+│   │   ├── roles.py            # Role, Permission, role → permissions, pages per permission
+│   │   ├── principal.py        # Principal: the authenticated subject every sign-in mechanism produces
+│   │   ├── passwords.py        # scrypt password hashing + password policy
+│   │   ├── users.py            # User directory: provisioning, reset, enable/disable, password change
+│   │   ├── providers.py        # Sign-in providers: PasswordVerifier contract, LocalPasswordVerifier (lockout)
+│   │   ├── sessions.py         # SessionManager: hashed, revocable sessions with idle / absolute expiry
+│   │   └── manage_users_cli.py # Logic behind manage_users.py
 │   ├── calculator.py           # Pure Python SR 11-7 Financial Ratio Calculator
+│   ├── sla.py                  # Decision SLA: 3-business-day commitment, due dates, on-track / due-soon / overdue
 │   ├── classification.py       # Transaction classification vocabulary, schema↔label maps, heuristic classifier
 │   ├── graph_workflow.py       # 6-Node LangGraph Agentic Underwriting Workflow
 │   ├── workflow_runner.py      # process_application / run_initiate_workflow / resume_with_human_decision
 │   ├── api_cli.py              # REST-backed admin CLI (used by list_loans / trace_loan / initiate_workflow)
-│   ├── db.py                   # Application DB: applications, audit trail, workflow run log, settings (SQLite / PostgreSQL)
+│   ├── db.py                   # Application DB: applications (SQL query builder for queues, Get Work candidates), audit trail, run log, settings, users, sign-in sessions (SQLite / PostgreSQL)
 │   ├── checkpointer.py         # LangGraph checkpointer factory (distinct database)
-│   ├── config.py               # dbconfig.ini + environment variable resolution
+│   ├── config.py               # dbconfig.ini / batch_intake.ini / auth.ini + environment variable resolution
 │   ├── admin.py                # Direct-database list/trace actions (used internally and by tests)
 │   ├── mock_apis.py            # Experian & Plaid REST API Mock Providers & Personas
 │   ├── schema.py               # Pydantic Structured Output Schemas (Agents 1 & 2)
@@ -141,7 +163,15 @@ loan-agent/
     ├── conftest.py             # Shared pytest fixtures, in-memory DBs & deterministic mock LLM
     ├── test_api.py             # End-to-end FastAPI tests (submit → pipeline → HitL decision → archive)
     ├── test_checkout.py        # Review checkout: exclusive launch, lease/heartbeat, release, decision enforcement
-    ├── test_identity.py        # Per-tab session identity (establish_user_identity) & the authentication plug-in seam
+    ├── test_identity.py        # Signed-in user + browser-tab session (establish_user_identity) & the authentication seam
+    ├── test_auth.py            # Sign-in end-to-end: passwords, lockout, sessions, cookie/bearer, CSRF, first sign-in, SSO hook
+    ├── test_rbac.py            # Role × endpoint access matrix (covers every route), pages per role, 3-persona journey
+    ├── test_manage_users.py    # manage_users.py: personas, idempotency, reset, enable/disable, sign-in; setup_env.sh
+    ├── test_agentic_app_redirect.py  # Retired Streamlit agentic app redirects and never opens the database
+    ├── test_sla.py              # Decision SLA math: business-day due dates, on-track/due-soon/overdue, decided
+    ├── test_queue_filters.py    # Desk queues: oldest first, SQL-level metadata filters (traced), "decided by me"
+    ├── test_get_work.py         # Get Work: priority, skipping files open elsewhere, concurrency, auto-next UI wiring
+    ├── test_applicant_self_service.py  # Sign-up, application ownership & isolation, My Applications, SLA end-to-end
     ├── test_batch_intake.py    # Partner batch intake: validation, folder flow, idempotency, admin API, monitor
     ├── fixtures/loan_batch_with_errors.csv  # Batch file exercising every row-level validation (demo / tests)
     ├── test_calculator.py      # Unit tests for financial ratio algorithms
@@ -212,36 +242,51 @@ HTTP request ──▶ api/routers (contracts, status codes) ──▶ api/servi
   - **Credit Tradelines**: FICO, bureau debt, public records, tradeline audit table.
   - **Bank Cash Flow**: classifications auto-populated from graph state (`categorized_transactions`) with per-transaction AI reasoning; credit/debit-specific dropdown options; *Reset to Heuristic* served by `loan_agent.classification` (single source of truth).
   - **Financial Ratios**: pre-calculated from graph state; `POST …/ratios/recalculate` re-runs the deterministic calculator with the officer's classifications **without mutating** the persisted graph state.
-- **Caller Identity — one session per browser tab** (`establish_user_identity()` in `api/dependencies.py`, applied to every `/api/v1` route): a request without the `X-Apex-Session-Id` header is a new session — the server issues a random UUID token in the same response header. The workbench establishes it with its first call (`GET /api/v1/session`), keeps it in **sessionStorage** (scoped to the tab, survives reloads) and sends it on every later call. A second tab starts without a token and becomes a different identity. Every screen shows the tab's session label (e.g. **🪪 Session 3F9A1C02**) in the page header; the label is derived from the token and never reveals it. The token identifies a tab; it is **not** authentication — when authentication is introduced, `establish_user_identity()` is the single place to resolve the authenticated principal instead.
-- **Exclusive Review Checkout (one identity per file)**: opening a pending file first checks it out to the calling identity (`POST …/checkout`); while it is checked out, no other reviewer **or other browser tab** can launch it — the queue shows **🔒 Checked out by another session** and a launch attempt is refused with `409 Conflict`. Who holds a file is never disclosed to other sessions (only the holder sees its own label; the audit trail records the real holder). The checkout is a lease (5 min) renewed by a heartbeat (`POST …/checkout/renew`, every 60 s) while the review is open, released when the review or the tab is closed (`DELETE …/checkout`), and released automatically with the determination. An abandoned checkout (crashed browser) lapses after the lease; administrators can force-release one (`DELETE …/checkout?force=true&actor=`), after which the holder's open review is told it lost the file. Checkout acquisitions and releases are written to the audit trail; heartbeats are not.
-- **Human Override & LangGraph Resumption**: `POST /api/v1/applications/{id}/decision` validates the mandatory justification memo, injects `human_reviewer_decision` / `human_reviewer_notes` via `graph.update_state()`, resumes with `graph.invoke(None)`, and finalizes as `HUMAN_APPROVED` or `HUMAN_DENIED`. The calling identity must hold the file's checkout (one is taken implicitly when nobody holds it, so API clients need not check out first); `officer` is the name recorded on the determination; the checkout is claimed atomically, so exactly one determination is recorded per file. State-machine guards return `409 Conflict` for files not awaiting review or checked out by someone else.
+- **Underwriter queues — oldest first, filterable**: the **Pending Review** queue is ordered **oldest first** (first in, first out; `sort=oldest`), so the longest-waiting applications are worked before newer ones; each card shows its queue position and how long it has been waiting. Both queues have a filter bar to cherry-pick files by loan application metadata — borrower name or reference number (partial, case-insensitive; `%` / `_` are matched literally), loan purpose, loan amount range, submission date range — and the **Adjudicated archive** adds the outcome (approved / denied) and **"Only decisions I made"**, which matches the signed-in user's ID recorded on each determination, never the editable display name (two officers may share one). The header counts remain the unfiltered totals and each queue shows "Showing X of Y".
+  - **Filtering happens in the database**: `GET /api/v1/applications` turns status, every metadata filter and the ordering into **one SQL statement** (`ApplicationDatabase.query_applications(ApplicationQuery)` — `WHERE … ORDER BY submitted_at, application_id`), on SQLite and PostgreSQL alike; non-matching rows are never read. "Decided by me" compares an indexed `decided_by` column (the deciding officer's user ID), which `save_application` keeps in step with the determination and which is backfilled for existing databases on start-up. Queue counts (`/api/v1/stats`) are a `GROUP BY`. `tests/test_queue_filters.py` traces the SQL actually executed and fails if the listing ever loads the whole table.
+  - **⚡ Get Work** (Pending Review tab; `POST /api/v1/applications/next-for-review`): the server picks the next highest-priority file — one this reviewer (in this tab) already holds first, so nobody accumulates files, otherwise the **oldest** pending file that nobody else has open — and checks it out to the reviewer in the same step, using the same single conditional SQL statement as opening a file by hand, so two reviewers clicking at the same moment (even on different server processes) never receive the same file. Queue filters do not apply to Get Work — they are for cherry-picking; Get Work always serves the queue in priority order. A file assigned by Get Work shows **"Get the next file automatically after my decision"** (ticked by default; the choice is remembered for the browser tab): Approve / Reject then opens the next file straight away — or reports that the queue is empty. A file **cherry-picked** from the queue never shows that checkbox, and its decision simply ends the review. The audit trail notes checkouts made "via Get Work".
+- **Applicant Self-Service — sign-up, submission, status tracking (`/signup`, `/status`)**: a Loan Applicant creates their own account (`POST /api/v1/auth/signup`; always the Applicant role, password chosen immediately — no empty-default step) and every application they submit is owned by that account (`submitted_by`). **My Applications** (`GET /api/v1/applications/mine[, /{id}]`) shows only the caller's own files — a status label (*Received / Under Review / Approved / Denied*, derived from the same status vocabulary as the Administrator's main-status rollup), and the **decision SLA**: a due date 3 business days from submission (`loan_agent/sla.py`, weekends skipped), which turns into *on track → due soon → overdue* while pending and a *decided (on time / late)* readout once a determination is recorded. A denial also surfaces the ECOA adverse action reasons. The projection deliberately excludes internal underwriting detail (adjudicator memo, policy citations, review checkouts, raw graph state) — `tests/test_applicant_self_service.py` asserts the exact field set returned. Requesting another applicant's file by ID answers `404`, identical to an unknown reference number (same no-enumeration principle as the pages — see Authentication & Roles).
+- **Signed-in users, per browser tab**: every page and API call requires a signed-in user (see [Authentication & Roles](#5-authentication--role-based-access-control)); the profile menu (top right, every screen) shows the user's name, user ID and role, with *Change password* and *Sign out*. For review exclusivity the workbench additionally identifies the **browser tab**: its first call (`GET /api/v1/session`) is issued a random tab token in the `X-Apex-Session-Id` header, kept in **sessionStorage** (scoped to the tab, survives reloads) and sent on every later call. The tab token is not a credential — it only tells one user's tabs apart. API clients send no tab header and act as the user as a whole.
+- **Exclusive Review Checkout (one holder per file)** — explained to underwriters in a notice at the top of the Pending Review queue: opening a pending file first checks it out to the signed-in underwriter **in that browser tab** (`POST …/checkout`); while it is checked out, no other reviewer — **nor another tab of the same reviewer** — can launch it — the queue shows **🔒 Checked out by another session** and a launch attempt is refused with `409 Conflict`. Who holds a file is never disclosed to other sessions (only the holder sees its own label; the audit trail records the real holder). The checkout is a lease (5 min) renewed by a heartbeat (`POST …/checkout/renew`, every 60 s) while the review is open, released when the review or the tab is closed (`DELETE …/checkout`), and released automatically with the determination. An abandoned checkout (crashed browser) lapses after the lease; administrators can force-release one (`DELETE …/checkout?force=true`, audited against the signed-in administrator), after which the holder's open review is told it lost the file. Checkout acquisitions and releases are written to the audit trail; heartbeats are not.
+- **Human Override & LangGraph Resumption**: `POST /api/v1/applications/{id}/decision` validates the mandatory justification memo, injects `human_reviewer_decision` / `human_reviewer_notes` via `graph.update_state()`, resumes with `graph.invoke(None)`, and finalizes as `HUMAN_APPROVED` or `HUMAN_DENIED`. The caller must hold the file's checkout (one is taken implicitly when nobody holds it, so API clients need not check out first); the adjudicating officer recorded on the determination (name + `officer_user_id`) and in the audit trail is always the **signed-in underwriter** — it cannot be typed in; the checkout is claimed atomically, so exactly one determination is recorded per file. State-machine guards return `409 Conflict` for files not awaiting review or checked out by someone else.
 - **Concurrency safety**: pipeline executions (batch and single-file) are serialized behind a process-level lock so no NEW file is processed twice; HitL decisions never wait on that lock, so Approve/Reject stays responsive while the periodic job runs. Review exclusivity is enforced by single conditional SQL statements, so it also holds across worker processes sharing the database.
 
 #### API Reference (`/docs` for interactive OpenAPI)
 
 | Method | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| `GET` | `/api/v1/health` | Liveness probe |
+| `GET` | `/api/v1/health` | Liveness probe (no sign-in required) |
+| `POST` | `/api/v1/auth/login` | Browser sign-in (JSON `user_id` / `password`): sets the HttpOnly session cookie |
+| `POST` | `/api/v1/auth/token` | API sign-in (OAuth2 password grant, form `username` / `password`): bearer token — also the **Authorize** button on `/docs` |
+| `POST` | `/api/v1/auth/logout` | Sign out (ends the cookie session or bearer token) |
+| `POST` | `/api/v1/auth/password` | Change password (`current_password` empty while on the empty default password) |
+| `GET` | `/api/v1/auth/providers` | Sign-in methods offered by the sign-in page (user ID & password; SSO providers when configured) |
+| `POST` | `/api/v1/auth/signup` | Self-service sign-up (Loan Applicant only); sets the session cookie and signs in immediately |
+| `GET` | `/api/v1/session` | Who am I: the signed-in user (role, permissions, pages); issues this browser tab's `X-Apex-Session-Id` |
 | `GET` | `/api/v1/system` | Engine/model/storage configuration + queue stats |
 | `GET` | `/api/v1/stats` | Queue counts by stage plus a `by_status` breakdown |
-| `GET` | `/` → `/portal`, `/desk`, `/admin` | Server-rendered Applicant Portal, Underwriter Desk & Administrator console (HTML) |
+| `GET` | `/login`; `/` → the user's home page | Sign-in page (also first-time password setup / password change) |
+| `GET` | `/signup` | Self-service sign-up page (Loan Applicant) |
+| `GET` | `/portal`, `/status`, `/desk`, `/admin` | Applicant Portal, My Applications, Underwriter Desk & Administrator console (HTML; redirect to `/login` when signed out; pages outside the user's role answer exactly like unknown pages — 404) |
 | `GET` | `/docs`, `/redoc`, `/openapi.json` | Interactive API reference |
 | `GET` | `/api/v1/personas` | Demo borrower personas for autofill |
 | `GET` | `/api/v1/calculator/installment?loan_amount=` | Fixed-rate monthly installment quote |
 | `GET` | `/api/v1/policy` | `policy_v1.md` as Markdown + rendered HTML |
-| `POST` | `/api/v1/applications` | Submit application (recorded as `NEW`; never triggers underwriting) |
-| `GET` | `/api/v1/applications?status=` | List (`new`, `processing`, `pending_review`, `adjudicated`, `approved`, `rejected`, `all`) |
+| `POST` | `/api/v1/applications` | Submit application (recorded as `NEW` and owned by the signed-in applicant; never triggers underwriting) |
+| `GET` | `/api/v1/applications/mine?status=` | My Applications: the signed-in applicant's own submissions, with status label & decision SLA |
+| `GET` | `/api/v1/applications/mine/{id}` | Status of one of the caller's own applications (`404`, not `403`, if it is not theirs) |
+| `GET` | `/api/v1/applications?status=&sort=&q=&loan_purpose=&min_amount=&max_amount=&submitted_from=&submitted_to=&decided_by_me=` | List (`status`: `new`, `processing`, `pending_review`, `adjudicated`, `approved`, `rejected`, `all`); `sort=oldest` for first-in-first-out (default `newest`); metadata filters combine with AND; `decided_by_me=true` keeps the determinations recorded by the caller. Contradictory ranges → `422` |
 | `GET` | `/api/v1/applications/{id}` | Full record incl. graph state & adjudication |
 | `GET` | `/api/v1/applications/{id}/audit-trail` | Regulatory audit events |
 | `GET` | `/api/v1/applications/{id}/dossier` | Underwriter review dossier |
 | `GET` | `/api/v1/applications/{id}/classifications/heuristic` | Rule-based classification map |
 | `POST` | `/api/v1/applications/{id}/ratios/recalculate` | What-if deterministic ratio recalculation |
 | `POST` | `/api/v1/applications/{id}/workflow?sync=&force=` | Dispatch the pipeline for one file |
-| `GET` | `/api/v1/session` | Establish (no header) or confirm (with `X-Apex-Session-Id`) the caller's per-tab session identity |
-| `POST` | `/api/v1/applications/{id}/checkout` | Check a PENDING_REVIEW file out to the calling identity (`409` if held by another reviewer / tab) |
+| `POST` | `/api/v1/applications/next-for-review` | **Get Work**: checks out to the caller the next highest-priority file — one they already hold, else the oldest PENDING_REVIEW file nobody else has open (`application: null` when none). Concurrent callers never get the same file |
+| `POST` | `/api/v1/applications/{id}/checkout` | Check a PENDING_REVIEW file out to the caller — user + tab (`409` if held by another reviewer / tab) |
 | `POST` | `/api/v1/applications/{id}/checkout/renew` | Heartbeat: extend the lease of a checkout you hold (`409` if you no longer hold it) |
-| `DELETE` | `/api/v1/applications/{id}/checkout` | Release your checkout (`?force=true&actor=` for an administrator override) |
-| `POST` | `/api/v1/applications/{id}/decision` | Human credit officer determination (HitL resume); the calling identity must hold the checkout |
+| `DELETE` | `/api/v1/applications/{id}/checkout` | Release your checkout (`?force=true`: administrator override) |
+| `POST` | `/api/v1/applications/{id}/decision` | Human credit officer determination (HitL resume), recorded against the signed-in underwriter, who must hold the checkout |
 | `POST` | `/api/v1/workflows/run?sync=&trigger=` | Initiate the workflow for all NEW files — fire-and-forget by default (`limit`, `dry_run`) |
 | `GET` | `/api/v1/workflows/runs/{run_id}` | Outcome of a logged run |
 | `GET` | `/api/v1/admin/status-summary` | Counts by the five main statuses (+ sub-statuses) |
@@ -252,6 +297,8 @@ HTTP request ──▶ api/routers (contracts, status codes) ──▶ api/servi
 | `GET` | `/api/v1/admin/intake/batches?limit=&partner_id=` | Recently received batch files with accepted / flagged counts |
 | `GET` | `/api/v1/admin/intake/batches/{batch_id}` | One batch file with the outcome of every row (flag reasons) |
 | `POST` | `/api/v1/admin/intake/scan` | Process files waiting in the partner inboxes now |
+
+Access per role is listed under [Authentication & Roles](#5-authentication--role-based-access-control); `tests/test_rbac.py` enforces it for every route.
 
 ---
 
@@ -286,6 +333,69 @@ A 6-node state machine orchestrating AI-driven credit analysis:
 - **Node 4 (`calculate_financial_ratios_node`)**: Pure Python mathematical calculation node.
 - **Node 5 (`underwriter_agent_node`)**: Policy evaluation agent dynamically assessing `policy_v1.md` rules and generating ECOA-compliant adverse action notices when denying.
 - **Node 6 (`human_review_node`)**: Human-in-the-loop review station for manual credit committee approval or sign-off.
+
+---
+
+### 5. Authentication & Role-Based Access Control
+
+Every workbench page and API endpoint requires a signed-in user — except the sign-in endpoints and the liveness probe (`/api/v1/health`). Anonymous API calls get `401`; anonymous page visits are redirected to `/login` and return to the requested page after sign-in.
+
+#### Roles
+
+| Role | Home page | May | How the account is created |
+| :--- | :--- | :--- | :--- |
+| **Loan Applicant** | `/portal` | Submit loan applications; track their own applications' status and decision SLA (`/status`). | **Self-service** — `/signup`, or `manage_users.py` |
+| **Loan Underwriter** | `/desk` | Review queue & archive, review dossier, ratio what-ifs, check files out, record determinations. | Administrator (`manage_users.py`) |
+| **Administrator** | `/admin` | Administrator console (status, job monitor, schedule configuration, partner intake), run the underwriting workflow, force-release checkouts, read applications & audit trails (admin CLI). **No credit authority** — cannot open a dossier or record a determination (segregation of duties). | Administrator (`manage_users.py`) |
+
+Endpoints and pages require *permissions* (`loan_agent/auth/roles.py`), never roles directly, so adding a role or mapping SSO groups onto roles touches only that file. Pages outside the user's role are absent from the navigation, and opening one gives **exactly the same response as a page that does not exist** (404 *Page not found* — same status, headers and bytes; signed-out visitors are sent to sign-in for both), so users cannot tell which other pages exist. Neither that page nor the API's `403` (*"You do not have access to this resource."*) reveals the user's role or the access a resource would need. Audit-trail actors are the signed-in users — e.g. `Jane Doe (jane.doe)` submitted, `Sam Smith (uw.smith)` checked out and approved — and client-supplied names (`officer`, `updated_by`, `actor`) are no longer accepted.
+
+#### Loan Applicants: self-service sign-up
+
+Anyone can create their own Loan Applicant account — `POST /api/v1/auth/signup` or the `/signup` page — with a user ID
+and password of their choosing (`display_name` optional). It is **always** the Applicant role; that is not a field
+a caller can set, there is no administrator step, and no empty-default-password window (the account is usable
+immediately; see `loan_agent.auth.users.self_register`). Signing up signs the new applicant in immediately, landing
+on the Applicant Portal. Every application they submit afterwards is recorded under that account (`submitted_by`),
+which is how **My Applications** (`/status`) knows which files are theirs — see
+[Applicant Self-Service](#2-autonomous-agentic-underwriting-service-api-fastapi) above.
+
+#### Setting up Underwriter / Administrator accounts — `manage_users.py`
+
+```bash
+python manage_users.py                     # creates 'underwriter' and 'admin' (empty default password)
+python manage_users.py --underwriter uw.smith --underwriter-name "Sam Smith" --admin ops.lee
+python manage_users.py --underwriter uw.second   # add another account for a persona
+python manage_users.py --reset uw.smith          # back to the empty default password (signs the user out everywhere)
+python manage_users.py --disable uw.second       # / --enable
+python manage_users.py --list
+```
+The script writes directly to the application database from `dbconfig.ini` (the service need not be running — this
+is how the first administrator is created). It is idempotent: existing accounts are left unchanged. It can still
+create Loan Applicant accounts too (`--applicant`) if you would rather provision one yourself than have the
+applicant sign up; both paths lead to the same `app_users` table.
+
+**Empty default password.** A new (or reset) account has no password — deliberately not mentioned anywhere a user sees (sign-in page, messages, API docs); tell users out of band: the user signs in with the user ID and an **empty** password and must choose a password (min. 8 characters, `auth.ini`) before anything else — until then the session can only call `POST /api/v1/auth/password` (every other endpoint answers `403`; pages redirect to the set-password step). ⚠️ Until the user has chosen a password, anybody who knows the user ID can claim the account: hand out user IDs only to their owners and ask them to sign in promptly.
+
+#### How sign-in works
+- **Browser**: `POST /api/v1/auth/login` sets an **HttpOnly, SameSite=Lax** session cookie (`Secure` when `cookie_secure = true` in `auth.ini` — set it whenever the service runs behind HTTPS). State-changing requests with the cookie must carry the `X-Requested-With` header (the workbench scripts send it), which blocks cross-site request forgery.
+- **API clients / CLI / Swagger**: `POST /api/v1/auth/token` (OAuth2 password grant) returns a bearer token: `Authorization: Bearer <token>`. In `/docs`, click **Authorize** and enter your user ID and password.
+- **Sessions** are server-side (`auth_sessions` table; only a SHA-256 hash of each token is stored). They end after `session_idle_minutes` without requests (default 30) and at the latest `session_max_hours` after sign-in (default 12), on sign-out, and when the account is reset or disabled. A password change signs the user out of every other session. Role changes apply on the next request.
+- **Passwords** are hashed with scrypt (salted, parameters stored with the hash). After `lockout_threshold` consecutive failures (default 5) an account is locked for `lockout_minutes` (default 15). Failures always return the same message, so responses never reveal whether a user ID exists; the log records the user ID only for existing accounts.
+
+#### Extending to SSO / token-based authentication
+The design separates *how a user signs in* from *how each request is authenticated* from *what the user may do*; all three meet in a single object, the `Principal` (user ID, name, role, auth method).
+
+| Layer | Today | Add later — nothing downstream changes |
+| :--- | :--- | :--- |
+| Sign-in providers (`loan_agent/auth/providers.py`) | `LocalPasswordVerifier` (user directory in `app_users`) | LDAP / Active Directory as another `PasswordVerifier` (`app.state.password_verifier_factory`); OIDC / SAML browser SSO as start + callback routes that build a `Principal` and call `SessionManager.issue()` + `set_session_cookie()` — listed for the sign-in page via `app.state.sign_in_options` (`type: "redirect"`) |
+| Request authenticators (`api/security.py`) | `BearerTokenAuthenticator`, `SessionCookieAuthenticator` | An IdP access-token (JWT) validator, or a trusted SSO-gateway header authenticator — pass the chain via `create_app(authenticators=[...])` |
+| Authorization (`loan_agent/auth/roles.py`) | Role → permissions | Map IdP groups / claims to roles; SSO-linked accounts live in `app_users` with `auth_provider` / `external_subject` (no local password) |
+
+`tests/test_auth.py::TestAuthenticatorChainIsTheExtensionPoint` plugs a stand-in IdP-token authenticator into the chain to demonstrate this.
+
+#### Configuration — `auth.ini`
+`session_idle_minutes`, `session_max_hours`, `cookie_name`, `cookie_secure`, `lockout_threshold`, `lockout_minutes`, `password_min_length`; environment overrides `AUTH_CONFIG` (file path) and `AUTH_<KEY>` (e.g. `AUTH_COOKIE_SECURE=true`).
 
 ---
 
@@ -352,11 +462,21 @@ GROQ_API_KEY=gsk_your_groq_api_key_here
 # Alternatively: OPENAI_API_KEY=sk-... or LLM_API_KEY=...
 ```
 
+### 4. Sign-in Accounts
+`setup_env.sh` creates the default accounts for the three personas (step 5). With the manual setup, run:
+```bash
+python manage_users.py      # 'applicant' (Loan Applicant), 'underwriter' (Loan Underwriter), 'admin' (Administrator)
+```
+The Underwriter and Administrator then sign in at `http://localhost:8000/login` with their user ID and an **empty**
+password and choose a password. A Loan Applicant may do the same — or skip `manage_users.py` entirely and create
+their own account at `http://localhost:8000/signup`. Custom user IDs, resets and more: see
+[Authentication & Roles](#5-authentication--role-based-access-control).
+
 ---
 
 ## 🖥️ Running the Applications
 
-Apex Financial provides three side-by-side entry points. The FastAPI service and the Streamlit agentic workbench share the same Application Database and LangGraph checkpointer, so they can **co-exist during migration** — a file submitted in one is visible and adjudicable in the other.
+Apex Financial provides two applications: the FastAPI service (the workbench, with sign-in) and the standalone Streamlit manual workbench. The former Streamlit agentic workbench (`agentic_app.py`) is retired and redirects to the FastAPI workbench.
 
 ### Option 1: Autonomous Agentic Underwriting Service (FastAPI, `api/`)
 
@@ -365,47 +485,59 @@ In this mode, the service exposes the Applicant Portal, the Underwriter Desk, an
 ```bash
 python run_api.py --reload            # or: uvicorn api.main:app --reload
 ```
-Open your browser at `http://localhost:8000/portal` (Applicant Portal), `http://localhost:8000/desk` (Underwriter Desk), `http://localhost:8000/admin` (Administrator), or `http://localhost:8000/docs` (OpenAPI).
+Open your browser at `http://localhost:8000/` and sign in (accounts: `python manage_users.py`). Each role lands on its own page: `/portal` (Applicant Portal — Loan Applicant), `/desk` (Underwriter Desk — Loan Underwriter), `/admin` (Administrator). The OpenAPI reference is at `http://localhost:8000/docs` (**Authorize** with your user ID and password).
 
-Storage locations are governed by `dbconfig.ini` (local SQLite under `data/` by default, or remote PostgreSQL) and can be overridden with `APP_STORAGE_MODE`, `APP_DB_PATH`, `LANGGRAPH_DB_PATH`, `APP_DB_URL`, `LANGGRAPH_DB_URL`.
+Storage locations are governed by `dbconfig.ini` (local SQLite under `data/` by default, or remote PostgreSQL) and can be overridden with `APP_STORAGE_MODE`, `APP_DB_PATH`, `LANGGRAPH_DB_PATH`, `APP_DB_URL`, `LANGGRAPH_DB_URL`. Every table that needs the auto-generated ID of a row it just inserted (audit events, workflow runs, intake batches) fetches it the psycopg3-compatible way (`RETURNING id`) rather than the SQLite-only `cursor.lastrowid`, so writes work the same way against either backend — exercised against a real PostgreSQL instance, not just mocked, in `tests/test_db.py`.
 
-Headless / scripted usage:
+Headless / scripted usage (every call carries a bearer token of a user with the right role):
 ```bash
-# Submit (recorded as NEW)
-curl -X POST localhost:8000/api/v1/applications -H 'Content-Type: application/json' \
+token() { curl -s -X POST localhost:8000/api/v1/auth/token -d "username=$1&password=$2" | python -c 'import sys,json; print(json.load(sys.stdin)["access_token"])'; }
+APPLICANT=$(token applicant 'applicant-password'); ADMIN=$(token admin 'admin-password'); UW=$(token underwriter 'underwriter-password')
+
+# Submit (recorded as NEW) — Loan Applicant
+curl -X POST localhost:8000/api/v1/applications -H "Authorization: Bearer $APPLICANT" -H 'Content-Type: application/json' \
   -d '{"applicant_name":"Ms. Some Name","ssn_last_4":"3333","stated_annual_income":110000,"loan_amount_requested":35000,"loan_purpose":"Medical Expenses","fcra_consent":true}'
 
-# Run the approval workflow for all NEW files (same as: python -m initiate_workflow)
-curl -X POST localhost:8000/api/v1/workflows/run -H 'Content-Type: application/json' -d '{}'
+# Run the approval workflow for all NEW files (same as: python -m initiate_workflow) — Administrator
+curl -X POST localhost:8000/api/v1/workflows/run -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{}'
 
-# Admin CLI (REST clients; target a remote instance with --api-url or LOAN_AGENT_API_URL)
-python -m list_loans --count          # counts by main status (new / pending processing / pending review / approved / rejected)
+# Admin CLI (REST clients; target a remote instance with --api-url or LOAN_AGENT_API_URL).
+# They sign in as an Administrator: --user (or LOAN_AGENT_USER) + password from LOAN_AGENT_PASSWORD or a prompt,
+# or a bearer token in LOAN_AGENT_TOKEN. Cron: export LOAN_AGENT_USER / LOAN_AGENT_PASSWORD in the job environment.
+python -m list_loans --count --user admin   # counts by main status (new / pending processing / pending review / approved / rejected)
 python -m list_loans --status "pending review"
 python -m trace_loan --app_id app-2026-001
 python -m initiate_workflow           # fire-and-forget; progress on /admin or list_loans --count
 
-# Adjudicate an escalated file
-curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H 'Content-Type: application/json' \
-  -d '{"decision":"APPROVE","officer":"Human Underwriter","notes":"Verified W-2; bonus structure explains variance."}'
+# Adjudicate an escalated file — Loan Underwriter (recorded against the signed-in underwriter)
+curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H "Authorization: Bearer $UW" -H 'Content-Type: application/json' \
+  -d '{"decision":"APPROVE","notes":"Verified W-2; bonus structure explains variance."}'
 ```
 
 #### Recommended Agentic Walkthrough:
-1. Navigate to the **Applicant Portal** (`/portal`).
-2. Click **`⚡ Autofill Demo Persona`** and submit. The built-in schedule initiates the approval workflow within the configured interval (default 2 minutes) — or trigger it now with `python -m initiate_workflow`:
+0. The default accounts exist after `setup_env.sh` (or `python manage_users.py`). Sign in as each persona the first time with the user ID and an empty password, and choose a password. Use separate browser profiles (or sign out / in via the profile menu) to switch between personas.
+1. Sign in as **`applicant`** — you land on the **Applicant Portal** (`/portal`).
+2. Click **`⚡ Autofill Demo Persona`** and submit. The built-in schedule initiates the approval workflow within the configured interval (default 2 minutes) — or trigger it now with `python -m initiate_workflow --user admin`:
    - **Mrs. Some Name (Prime)**: Click Submit → AI Underwriter approves automatically per Tier 1 rules → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_APPROVED`.
    - **Mr. Some Name (Subprime)**: Click Submit → AI Underwriter detects knockout criteria (FICO < 620, DTI > 45%, 4 NSF fees) → application immediately moves to the **Adjudicated / Completed Archive** with status `AUTO_DENIED` and ECOA adverse action notices.
    - **Ms. Some Name (Nuanced / High-Value)**: Click Submit → loan amount ($35,000) and income variance (>15%) trigger Section 4 escalation → graph pauses execution before `human_review_node` → appears in the **Pending Loan Review Queue**.
-3. Switch to the **Underwriter Desk** (`/desk`) via the sidebar navigation (the header badge shows this tab's session, e.g. **🪪 Session 3F9A1C02**).
-4. Click **Review & Adjudicate ↗** on Ms. Some Name's escalated file — it is now checked out to this tab (open `/desk` in a second tab to see it shown as **🔒 Checked out by Session …**):
+3. Sign in as **`underwriter`** — you land on the **Underwriter Desk** (`/desk`); the profile menu (top right) shows who is signed in.
+4. Click **⚡ Get Work** to be handed the longest-waiting file (with *Get the next file automatically* ticked, each decision opens the next one) — or cherry-pick: the pending queue lists the longest-waiting file first, and the filter bar (name / reference, purpose, amount, submission dates) narrows it down. Click **Review & Adjudicate ↗** on Ms. Some Name's escalated file — it is now checked out to you in this tab (open `/desk` in a second tab, or as a second underwriter, to see it shown as **🔒 Checked out by another session**):
    - **`🤖 AI Assessment` Tab**: Review the AI recommendation (`ESCALATE`), confidence score, detailed underwriter memorandum, policy citations, bank analyst narrative, and complete LangGraph execution trace.
    - **`💳 Bank Cash Flow` Tab**: Observe how all transactions are **auto-populated and pre-classified** by the AI Bank Statement Analyst agent.
    - **`📊 Financial Ratios` Tab**: Observe how all financial metrics (*Post-Loan DTI*, *Payment Cushion Ratio*, *Income Variance*) are **auto-populated from the graph state** without needing manual computation.
 5. In the **Human Credit Officer Determination** action panel on the right:
    - Review the AI Agent Escalation briefing callout.
-   - Enter your justification notes into **Credit Officer Justification** (e.g., *"Verified W-2 documentation confirms valid bonus structure; approved 41.8% DTI within near-prime tier"*).
+   - The **Adjudicating Officer** is you (the signed-in underwriter) and cannot be edited. Enter your justification notes into **Credit Officer Justification** (e.g., *"Verified W-2 documentation confirms valid bonus structure; approved 41.8% DTI within near-prime tier"*).
    - Click **`✅ Approve`** (or **`❌ Reject`**).
    - The system updates graph state and resumes execution, finalizing the loan as `HUMAN_APPROVED` (or `HUMAN_DENIED`).
-6. Navigate to the **Adjudicated / Completed Archive** to inspect the full audit trail, execution trace, and officer notes.
+6. Navigate to the **Adjudicated / Completed Archive** to inspect the full audit trail, execution trace, and officer notes — tick **Only decisions I made** to see just your own determinations.
+7. Back as **`applicant`** (or a fresh applicant created at `/signup`), open **My Applications** (`/status`) to see the outcome: *Approved* / *Denied*, the decision SLA (*on track* while pending, *decided — on time / late* once settled), and — for Mr. Some Name's automated denial — the ECOA adverse action reasons.
+
+#### Applicant Self-Service Walkthrough (no `manage_users.py` needed):
+1. Open `/signup`, choose a user ID and password, and submit — you are signed in immediately on the **Applicant Portal**, no administrator or empty-default-password step involved.
+2. Submit a loan application. The confirmation states the reference number and the **3-business-day decision SLA**, with a link to **My Applications**.
+3. Open **My Applications** (`/status`) at any time: each application shows its status and, while pending, a due date 3 business days out (weekends skipped) that turns into *due soon* and then *overdue* (politely worded — no alarming language) if it runs past that; once decided, the SLA panel reports whether it was delivered *within* or *later than* the target. Create a second applicant account to confirm it only ever sees its own applications — requesting another applicant's reference number answers `404`, identical to a made-up one.
 
 #### Partner Batch Intake Walkthrough:
 1. With the service running, "deliver" a batch file the way a partner's FTP client would (upload under a temporary name, then rename):
@@ -414,20 +546,20 @@ curl -X POST localhost:8000/api/v1/applications/APP-2026-001/decision -H 'Conten
    mv data/intake/inbox/ACME_BROKERS/ACME_BROKERS_20260115_001.csv{.part,}
    cp tests/fixtures/loan_batch_with_errors.csv data/intake/inbox/ACME_BROKERS/ACME_BROKERS_20260115_002.csv
    ```
-2. Within ~30 seconds both files are picked up (or click **Scan Inboxes Now** on **Administrator → 📥 Partner Batch Intake**). The sample is fully accepted; the second file is *partially accepted* — open it to see each flagged row and why.
+2. Within ~30 seconds both files are picked up (or, signed in as `admin`, click **Scan Inboxes Now** on **Administrator → 📥 Partner Batch Intake**). The sample is fully accepted; the second file is *partially accepted* — open it to see each flagged row and why.
 3. The partner's results files appear in `data/intake/outbox/ACME_BROKERS/`.
 4. The accepted rows are `NEW` applications; the initiate-workflow job underwrites them on its next run, exactly like portal submissions.
 
 ---
 
-### Option 2: Agentic Workbench — Streamlit (`agentic_app.py`, legacy during migration)
+### Option 2: Agentic Workbench — Streamlit (`agentic_app.py`, retired)
 
-The original Streamlit implementation of the agentic workflow. It is retained so existing users can keep working while they migrate to the FastAPI service; both read and write the same databases.
+The original Streamlit implementation of the agentic workflow has been retired: every visit is **redirected to the landing page of the FastAPI workbench**, where users sign in. Nothing else runs, so it no longer reads or writes the application database (no way around sign-in and roles).
 
 ```bash
-streamlit run agentic_app.py
+streamlit run agentic_app.py      # http://localhost:8501 -> redirects to http://<same host>:8000/
 ```
-Open your browser at `http://localhost:8501`. The walkthrough above applies unchanged.
+Redirect target: `APEX_WORKBENCH_URL` if set (e.g. `https://workbench.apex.example`), otherwise port 8000 on the host the browser used to reach the Streamlit app. The redirect uses `st.html(..., unsafe_allow_javascript=True)`; a *Continue* link is shown as well in case scripts are blocked (or on Streamlit versions without that option). The legacy code below the redirect is kept for reference only.
 
 ### Option 3: Manual Underwriting Workbench (`app.py`, Streamlit)
 
@@ -461,6 +593,15 @@ pytest -m "not integration"
 
 # 1b. Only the FastAPI end-to-end tests (submit → pipeline → dossier → HitL decision → archive)
 pytest tests/test_api.py
+
+# 1c. Authentication & access control (real accounts, sessions and tokens — no overrides)
+pytest tests/test_auth.py tests/test_rbac.py tests/test_manage_users.py tests/test_agentic_app_redirect.py
+
+# 1d. Applicant self-service: sign-up, application ownership & isolation, My Applications, decision SLA
+pytest tests/test_sla.py tests/test_applicant_self_service.py
+
+# 1e. Underwriter queues: oldest-first pending queue, SQL-level metadata filters, "decided by me", Get Work
+pytest tests/test_queue_filters.py tests/test_get_work.py
 
 # 2. Run unit tests with code coverage report
 pytest --cov

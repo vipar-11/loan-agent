@@ -192,3 +192,61 @@ def load_intake_config(config_path: Optional[str | Path] = None) -> IntakeConfig
         max_rows=int(_get("max_rows", "1000")),
         approved_partners=partners,
     )
+
+
+# ---------------------------------------------------------------------------
+# Authentication (sign-in sessions, lockout, password policy)
+# ---------------------------------------------------------------------------
+@dataclass
+class AuthConfig:
+    session_idle_minutes: int = 30        # a sign-in session ends after this long without requests
+    session_max_hours: int = 12           # ... and at the latest this long after sign-in
+    cookie_name: str = "apex_session"
+    cookie_secure: bool = False           # set true whenever the service is served over HTTPS
+    lockout_threshold: int = 5            # consecutive failed sign-ins that lock an account ...
+    lockout_minutes: int = 15             # ... for this long
+    password_min_length: int = 8
+
+
+def find_auth_config_file(explicit_path: Optional[str | Path] = None) -> Optional[Path]:
+    """Resolves auth.ini from an explicit path, AUTH_CONFIG, the cwd, or the project root."""
+    for candidate in (
+        Path(explicit_path) if explicit_path else None,
+        Path(os.environ["AUTH_CONFIG"]) if os.environ.get("AUTH_CONFIG") else None,
+        Path.cwd() / "auth.ini",
+        Path(__file__).resolve().parent.parent / "auth.ini",
+    ):
+        if candidate is not None and candidate.exists():
+            return candidate
+    return None
+
+
+def load_auth_config(config_path: Optional[str | Path] = None) -> AuthConfig:
+    """
+    Loads [auth] from auth.ini (all keys optional; defaults as in AuthConfig).
+    Environment overrides: AUTH_SESSION_IDLE_MINUTES, AUTH_SESSION_MAX_HOURS, AUTH_COOKIE_SECURE,
+    AUTH_LOCKOUT_THRESHOLD, AUTH_LOCKOUT_MINUTES, AUTH_PASSWORD_MIN_LENGTH.
+    """
+    defaults = AuthConfig()
+    parser = configparser.ConfigParser()
+    resolved = find_auth_config_file(config_path)
+    if resolved:
+        parser.read(resolved, encoding="utf-8")
+    section = parser["auth"] if parser.has_section("auth") else {}
+
+    def _raw(key: str, default: object) -> str:
+        env = os.environ.get(f"AUTH_{key.upper()}")
+        return (env if env not in (None, "") else str(section.get(key, default))).strip()  # type: ignore[union-attr]
+
+    def _int(key: str, default: int, minimum: int) -> int:
+        return max(minimum, int(_raw(key, default)))
+
+    return AuthConfig(
+        session_idle_minutes=_int("session_idle_minutes", defaults.session_idle_minutes, 1),
+        session_max_hours=_int("session_max_hours", defaults.session_max_hours, 1),
+        cookie_name=_raw("cookie_name", defaults.cookie_name) or defaults.cookie_name,
+        cookie_secure=_raw("cookie_secure", defaults.cookie_secure).lower() in ("1", "true", "yes", "on"),
+        lockout_threshold=_int("lockout_threshold", defaults.lockout_threshold, 1),
+        lockout_minutes=_int("lockout_minutes", defaults.lockout_minutes, 1),
+        password_min_length=_int("password_min_length", defaults.password_min_length, 1),
+    )

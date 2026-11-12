@@ -97,6 +97,8 @@
     try {
       const res = await ApexAPI.submitApplication(payload);
       ApexUI.showAlert(alertBox, 'success', '✅ ' + res.message);
+      alertBox.querySelector('.alert').insertAdjacentHTML('beforeend',
+        ' <a href="/status">Go to My Applications ↗</a>');
       form.reset();
       $('fcra_consent').checked = true;
         preview.textContent = '—';

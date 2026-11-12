@@ -6,46 +6,118 @@
   const alertBox = $('desk-alert');
   const POLL_MS = 4000;
 
-  let apps = [];
+  let pendingApps = [];   // PENDING_REVIEW files matching the pending filters, oldest first
+  let archiveApps = [];   // adjudicated files matching the archive filters, newest first
   let policyHtml = null;
   // heartbeat: lease-renewal timer; lost: checkout no longer held by this tab;
   // deciding / decided: a determination is in flight / recorded (the server releases the checkout itself).
-  const EMPTY_MODAL = { id: null, dossier: null, classifications: {}, heartbeat: null, lost: false, deciding: false, decided: false };
+  // mode: 'get-work' (assigned by the Get Work button — may continue with the next file after the decision) or
+  //       'cherry-pick' (opened from the queue — the review ends with the decision).
+  const EMPTY_MODAL = { id: null, mode: 'cherry-pick', dossier: null, classifications: {}, heartbeat: null, lost: false, deciding: false, decided: false };
   let modal = { ...EMPTY_MODAL };
 
   ApexUI.initTabs(document);
 
   /* ==================================================================
-     Session identity: this browser tab is one reviewer identity (see api.js)
+     Reviewer identity: the signed-in underwriter, in this browser tab (see api.js).
+     Determinations are recorded against the signed-in user; the name is not editable.
      ================================================================== */
-  // The session badge itself is rendered in the shared page header by api.js (every screen shows it).
-  const sessionLabel = () => (ApexAPI.currentIdentity() || {}).display_name || 'this session';
+  const signedInName = () => (ApexAPI.currentIdentity() || {}).display_name
+    || (document.getElementById('session-label') || {}).textContent || 'you';
 
   /* ==================================================================
-     Data loading & stats
+     Data loading, filters & stats
+     Each queue is fetched with its own metadata filters (server-side, GET /api/v1/applications). The pending review
+     queue is always ordered oldest first, so the longest-waiting files are worked first. Totals in the header come
+     from /stats, so they stay correct while a filter narrows a queue.
      ================================================================== */
+  const QUEUES = {
+    pending: { form: $('pending-filters'), summary: $('pending-summary'), base: { status: 'pending_review', sort: 'oldest' } },
+    archive: { form: $('archive-filters'), summary: $('archive-summary'), base: { status: 'adjudicated', sort: 'newest' } },
+  };
+  let totals = { pending_review: 0, adjudicated: 0 };
+  const latestRequest = { pending: 0, archive: 0 };  // discard out-of-order responses (polling + typing)
+
+  /** Non-empty fields of a filter form as query parameters. */
+  function filterParams(form) {
+    const params = {};
+    new FormData(form).forEach((value, key) => { const v = String(value).trim(); if (v) params[key] = v; });
+    return params;
+  }
+
+  /** Mirrors the server's 422 checks so a half-typed range gives a hint instead of an error alert. */
+  function filterProblem(p) {
+    if (p.min_amount && p.max_amount && Number(p.min_amount) > Number(p.max_amount)) return 'Min amount is greater than max amount.';
+    if (p.submitted_from && p.submitted_to && p.submitted_from > p.submitted_to) return '"Submitted from" is later than "submitted to".';
+    return null;
+  }
+
+  function summarize(queue, shown, total, label, order) {
+    const el = QUEUES[queue].summary;
+    el.classList.remove('error');
+    const filtered = Object.keys(filterParams(QUEUES[queue].form)).length > 0;
+    el.textContent = filtered
+      ? `Showing ${shown} of ${total} ${label} matching the filters — ${order}.`
+      : `Showing all ${total} ${label} — ${order}.`;
+  }
+
+  /** Fetches one queue. Resolves to its items, or null when filters are contradictory or a newer request superseded it. */
+  async function fetchQueue(queue) {
+    const { form, summary, base } = QUEUES[queue];
+    const params = filterParams(form);
+    const problem = filterProblem(params);
+    if (problem) { summary.textContent = `⚠️ ${problem}`; summary.classList.add('error'); return null; }
+    const ticket = ++latestRequest[queue];
+    const items = await ApexAPI.queryApplications({ ...base, ...params });
+    return ticket === latestRequest[queue] ? items : null;
+  }
+
   async function loadAll() {
     try {
-      apps = await ApexAPI.listApplications('all');
+      const [stats, pending, archive] = await Promise.all([ApexAPI.stats(), fetchQueue('pending'), fetchQueue('archive')]);
+      totals = { pending_review: stats.pending_review, adjudicated: stats.adjudicated };
       renderStats();
-      renderPendingQueue();
-      renderArchive();
+      if (pending) {
+        pendingApps = pending;
+        renderPendingQueue();
+        summarize('pending', pendingApps.length, totals.pending_review, 'files awaiting review', 'oldest first');
+      }
+      if (archive) {
+        archiveApps = archive;
+        renderArchive();
+        summarize('archive', archiveApps.length, totals.adjudicated, 'adjudicated files', 'newest first');
+      }
     } catch (ex) {
       ApexUI.showAlert(alertBox, 'error', ex.message);
     }
   }
 
-  function byStage(stage) { return apps.filter(a => a.stage === stage); }
-
   function renderStats() {
-    const s = {
-      pending_review: byStage('PENDING_REVIEW').length,
-      adjudicated: byStage('ADJUDICATED').length,
-    };
     document.querySelectorAll('[data-stat]').forEach(el => {
       const key = el.getAttribute('data-stat');
-      if (key in s) el.textContent = s[key];
+      if (key in totals) el.textContent = totals[key];
     });
+  }
+
+  // Re-query when a filter changes: immediately for selects / dates / checkboxes, debounced while typing.
+  Object.values(QUEUES).forEach(({ form }) => {
+    let timer = null;
+    form.addEventListener('submit', (e) => { e.preventDefault(); loadAll(); });
+    form.addEventListener('change', () => { clearTimeout(timer); loadAll(); });
+    form.addEventListener('input', (e) => {
+      if (e.target.tagName === 'SELECT' || e.target.type === 'checkbox' || e.target.type === 'date') return;
+      clearTimeout(timer);
+      timer = setTimeout(loadAll, 300);
+    });
+    form.addEventListener('reset', () => { clearTimeout(timer); setTimeout(loadAll, 0); });  // after values reset
+  });
+
+  /** "3d 4h" since submission — the queue is worked oldest first. */
+  function waitingFor(submittedAt) {
+    const t = new Date(String(submittedAt || '').replace(' ', 'T'));
+    if (Number.isNaN(t.getTime())) return '';
+    const hours = Math.max(0, Math.floor((Date.now() - t.getTime()) / 3600000));
+    return hours >= 24 ? `${Math.floor(hours / 24)}d ${hours % 24}h` : `${hours}h`;
   }
 
   function emptyState(icon, title, sub) {
@@ -56,13 +128,15 @@
      TAB: Pending review queue
      ================================================================== */
   function renderPendingQueue() {
-    const items = byStage('PENDING_REVIEW');
+    const items = pendingApps;
     const el = $('pending-queue');
     if (!items.length) {
-      el.innerHTML = emptyState('📭', 'Underwriting Queue Is Empty (0 Pending Reviews)', 'Applications with <strong>ESCALATE</strong> decisions will automatically appear here for credit officer review.');
+      el.innerHTML = totals.pending_review && Object.keys(filterParams(QUEUES.pending.form)).length
+        ? emptyState('🔎', 'No Pending Files Match These Filters', 'Adjust or clear the filters above to see the rest of the queue.')
+        : emptyState('📭', 'Underwriting Queue Is Empty (0 Pending Reviews)', 'Applications with <strong>ESCALATE</strong> decisions will automatically appear here for credit officer review.');
       return;
     }
-    el.innerHTML = items.map(a => {
+    el.innerHTML = items.map((a, index) => {
       const co = a.checkout;
       const mine = co && co.held_by_you;
       const locked = co && !mine;
@@ -76,8 +150,10 @@
       <div class="queue-row">
         <div class="queue-card">
           <div>
+            <span class="mono queue-wait" title="Position in the queue (oldest first)">#${index + 1}</span>
             <span class="queue-name">${E(a.applicant_name)}</span><span class="queue-id">[${E(a.application_id)}]</span>
             <span class="badge-pill badge-amber badge-sm" style="margin-left:8px;">ESCALATED BY AI</span>${lockBadge}
+            <span class="queue-wait">⏱ waiting ${E(waitingFor(a.submitted_at))}</span>
             <div class="queue-meta">SSN: ${E(a.ssn_masked)} | Stated: ${ApexFmt.currency(a.stated_annual_income)}/yr | Purpose: ${E(a.loan_purpose)}${a.post_loan_dti != null ? ` | DTI: ${Number(a.post_loan_dti).toFixed(1)}%` : ''} | Submitted: ${E(a.submitted_at)}</div>
           </div>
           <span class="queue-amt">${ApexFmt.currency(a.loan_amount_requested)}</span>
@@ -92,11 +168,13 @@
      TAB: Archive + inspector
      ================================================================== */
   function renderArchive() {
-    const items = byStage('ADJUDICATED');
+    const items = archiveApps;
     const tableEl = $('archive-table');
     const inspector = $('archive-inspector');
     if (!items.length) {
-      tableEl.innerHTML = emptyState('📁', 'Archive Empty (0 Adjudicated Records)', 'Applications settled via automated rules or human adjudication will be logged here for permanent compliance auditing.');
+      tableEl.innerHTML = totals.adjudicated && Object.keys(filterParams(QUEUES.archive.form)).length
+        ? emptyState('🔎', 'No Adjudicated Files Match These Filters', 'Adjust or clear the filters above to see the rest of the archive.')
+        : emptyState('📁', 'Archive Empty (0 Adjudicated Records)', 'Applications settled via automated rules or human adjudication will be logged here for permanent compliance auditing.');
       inspector.classList.add('hidden');
       return;
     }
@@ -197,9 +275,52 @@
 
   // Closing the tab / navigating away must not leave the file locked for the full lease.
   window.addEventListener('pagehide', () => releaseHeldCheckout(true));
+  // Signing out: release while the session is still valid (afterwards the release would be refused).
+  ApexUI.onSignOut(async () => {
+    stopHeartbeat();
+    if (modal.id && !modal.lost && !modal.decided) {
+      const id = modal.id;
+      modal.lost = true;  // nothing left for pagehide to release
+      await ApexAPI.releaseCheckout(id).catch(() => { /* lease lapses on its own */ });
+    }
+  });
 
-  async function openModal(id) {
+  /* ------------------------------------------------------------------
+     Get Work: the server picks the next highest-priority file (one this tab already holds, else the oldest one
+     nobody else has open) and checks it out to this tab. `previous` is the outcome message of the decision that
+     led here when continuing automatically.
+     ------------------------------------------------------------------ */
+  const AUTO_NEXT_KEY = 'apex.desk.autoNext';
+  function autoNextPreferred() {
+    try { return sessionStorage.getItem(AUTO_NEXT_KEY) !== 'false'; } catch (_) { return true; }
+  }
+  function rememberAutoNext(on) {
+    try { sessionStorage.setItem(AUTO_NEXT_KEY, on ? 'true' : 'false'); } catch (_) { /* storage disabled */ }
+  }
+
+  async function getWork(previous) {
+    const btn = $('btn-get-work');
+    btn.disabled = true;
+    try {
+      const res = await ApexAPI.nextForReview();
+      if (!res.application) {
+        ApexUI.showAlert(alertBox, previous ? 'success' : 'info', `${previous ? previous + ' ' : ''}📭 ${res.message}`);
+        loadAll();
+        return;
+      }
+      await openModal(res.application.application_id, 'get-work');
+      if (previous) ApexUI.showAlert(alertBox, 'success', `${previous} Next up: ${res.application.application_id}.`);
+    } catch (ex) {
+      ApexUI.showAlert(alertBox, 'error', ex.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $('btn-get-work').addEventListener('click', () => getWork());
+
+  async function openModal(id, mode = 'cherry-pick') {
     // Check the file out to this tab BEFORE showing anything: if another identity holds it, it cannot be launched.
+    // (Get Work has already checked it out to this tab; checking out again is a no-op re-open.)
     let lease;
     try {
       lease = await ApexAPI.checkout(id);
@@ -209,7 +330,7 @@
       return;
     }
     alertBox.innerHTML = '';
-    modal = { ...EMPTY_MODAL, id };
+    modal = { ...EMPTY_MODAL, id, mode };
     modalEl.classList.remove('hidden');
     startHeartbeat(lease.heartbeat_seconds);
     try {
@@ -294,13 +415,18 @@
           <div class="body">${E(memoSnip)}</div>
         </div>
         <div class="section-label">Human Credit Officer Determination</div>
-        <div id="checkout-banner"><div class="alert alert-success" style="margin:0 0 10px 0; font-size:0.75rem;">🔒 Checked out to this tab (<strong>${E(sessionLabel())}</strong>). Other reviewers and other browser tabs cannot open this file until you close it.</div></div>
+        <div id="checkout-banner"><div class="alert alert-success" style="margin:0 0 10px 0; font-size:0.75rem;">🔒 Checked out to you in this tab. Other reviewers — and your other browser tabs — cannot open this file until you close it.</div></div>
         <form id="decision-form">
-          <label class="field-label" for="officer">Adjudicating Officer *</label>
-          <input type="text" id="officer" value="Human Underwriter" />
+          <label class="field-label" for="officer">Adjudicating Officer</label>
+          <input type="text" id="officer" value="${E(signedInName())}" readonly title="Determinations are recorded against the signed-in underwriter." />
           <label class="field-label" for="notes" style="margin-top:10px;">Credit Officer Justification (Mandatory) *</label>
           <textarea id="notes" placeholder="e.g. Verified W-2 and pay stubs; tax withholding explains income variance. Approved 41.8% DTI within near-prime policy guidelines." title="Mandatory: Record justification memorandum before finalizing credit determination."></textarea>
           <div id="decision-error" style="margin-top:8px;"></div>
+          ${modal.mode === 'get-work' ? `
+          <label class="checkbox-row auto-next-row" id="auto-next-row">
+            <input type="checkbox" id="auto-next" ${autoNextPreferred() ? 'checked' : ''} />
+            Get the next file automatically after my decision
+          </label>` : ''}
           <div class="metric-grid-2" style="margin-top:10px;">
             <button type="button" class="btn btn-primary btn-block" data-decision="APPROVE">✅ Approve</button>
             <button type="button" class="btn btn-block" data-decision="DENY">❌ Reject</button>
@@ -311,6 +437,8 @@
     </div>`;
 
     ApexUI.initTabs(modalBody);
+    const autoNext = $('auto-next');
+    if (autoNext) autoNext.addEventListener('change', () => rememberAutoNext(autoNext.checked));
     $('btn-cancel-modal').addEventListener('click', closeModal);
     bindBankTab();
     bindRatiosTab();
@@ -460,10 +588,14 @@
     active.innerHTML = `<span class="spinner"></span> Recording determination (${decision})…`;
     modal.deciding = true;
     try {
-      const updated = await ApexAPI.recordDecision(modal.id, { decision, officer: $('officer').value, notes });
+      const updated = await ApexAPI.recordDecision(modal.id, { decision, notes });
+      // Continue with the next file only for reviews assigned by Get Work, and only if the reviewer left it ticked.
+      const continueWithNext = modal.mode === 'get-work' && !!($('auto-next') && $('auto-next').checked);
       modal.decided = true;  // the server released the checkout together with the determination
       closeModal();
-      ApexUI.showAlert(alertBox, 'success', `✅ ${updated.application_id} finalized as ${updated.status} by ${updated.adjudication.officer}.`);
+      const done = `✅ ${updated.application_id} finalized as ${updated.status} by ${updated.adjudication.officer}.`;
+      if (continueWithNext) await getWork(done);
+      else ApexUI.showAlert(alertBox, 'success', done);
     } catch (ex) {
       modal.deciding = false;
       errBox.innerHTML = `<div class="alert alert-error" style="margin:0;">${E(ex.message)}</div>`;

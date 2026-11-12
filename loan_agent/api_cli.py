@@ -9,9 +9,17 @@ Target service resolution (first match wins):
     1. --api-url CLI flag
     2. LOAN_AGENT_API_URL environment variable
     3. http://127.0.0.1:8000
+
+Authentication (the service requires a signed-in Administrator for these tools; first match wins):
+    1. LOAN_AGENT_TOKEN        a bearer token from POST /api/v1/auth/token (used as-is, never revoked here)
+    2. --user / LOAN_AGENT_USER the user ID; the password comes from LOAN_AGENT_PASSWORD or an interactive prompt.
+                               The tool signs in, runs, and signs out again (revoking its token).
+For unattended runs (cron), set LOAN_AGENT_USER and LOAN_AGENT_PASSWORD in the job's environment.
 """
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -42,12 +50,34 @@ class ApiClient:
     or `fastapi.testclient.TestClient`), which keeps this module testable without a live server.
     """
 
-    def __init__(self, base_url: Optional[str] = None, session: Optional[Any] = None):
+    def __init__(self, base_url: Optional[str] = None, session: Optional[Any] = None, token: Optional[str] = None):
         self.base_url = (base_url or os.environ.get("LOAN_AGENT_API_URL") or DEFAULT_API_URL).rstrip("/")
         self._http = session or requests.Session()
+        self.token = token or os.environ.get("LOAN_AGENT_TOKEN") or None
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{API_PREFIX}{path}"
+
+    def _headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    def sign_in(self, user_id: str, password: str) -> None:
+        """OAuth2 password grant (POST /auth/token); subsequent calls carry the bearer token."""
+        body = self._parse(self._http.post(self._url("/auth/token"), data={"username": user_id, "password": password}))
+        self.token = body["access_token"]
+        if body.get("password_change_required"):
+            self.sign_out()
+            raise ApiError(403, f"User '{user_id}' must choose a password first: sign in to the workbench "
+                                f"(/login) with the empty default password, then re-run this command.")
+
+    def sign_out(self) -> None:
+        """Revokes the current token (best effort)."""
+        if self.token:
+            try:
+                self._http.post(self._url("/auth/logout"), headers=self._headers())
+            except Exception:
+                pass
+            self.token = None
 
     @staticmethod
     def _parse(response: Any) -> Any:
@@ -61,10 +91,43 @@ class ApiClient:
         return response.json()
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        return self._parse(self._http.get(self._url(path), params=params))
+        return self._parse(self._http.get(self._url(path), params=params, headers=self._headers()))
 
     def post(self, path: str, payload: Optional[Dict[str, Any]] = None) -> Any:
-        return self._parse(self._http.post(self._url(path), json=payload if payload is not None else {}))
+        return self._parse(self._http.post(
+            self._url(path), json=payload if payload is not None else {}, headers=self._headers()
+        ))
+
+
+def add_auth_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--user", type=str, default=None,
+                        help="User ID to sign in with (default: LOAN_AGENT_USER). The password is read from "
+                             "LOAN_AGENT_PASSWORD or prompted for. Not needed when LOAN_AGENT_TOKEN is set.")
+
+
+@contextmanager
+def signed_in(client: ApiClient, user: Optional[str]) -> Iterator[ApiClient]:
+    """
+    Ensures `client` is authenticated for the duration of a command. A pre-supplied token is used as-is; otherwise
+    the tool signs in with the user ID and password and signs out (revoking its token) afterwards.
+    """
+    if client.token:
+        yield client
+        return
+    user_id = user or os.environ.get("LOAN_AGENT_USER")
+    if not user_id:
+        raise ApiError(401, "Sign-in required: pass --user USER_ID (or set LOAN_AGENT_USER), "
+                            "or provide a bearer token in LOAN_AGENT_TOKEN.")
+    password = os.environ.get("LOAN_AGENT_PASSWORD")
+    if password is None:
+        if not sys.stdin.isatty():
+            raise ApiError(401, "No password: set LOAN_AGENT_PASSWORD for non-interactive use.")
+        password = getpass.getpass(f"Password for {user_id}: ")
+    client.sign_in(user_id, password)
+    try:
+        yield client
+    finally:
+        client.sign_out()
 
 
 def _connection_help(client: ApiClient, exc: Exception) -> str:
@@ -177,11 +240,13 @@ def main_list_loans(argv: Optional[List[str]] = None, client: Optional[ApiClient
                         help="Print a summary of application counts grouped by status.")
     parser.add_argument("--api-url", type=str, default=None,
                         help=f"Base URL of the underwriting service (default: {DEFAULT_API_URL}).")
+    add_auth_arguments(parser)
     parsed = parser.parse_args(args)
 
     api = client or ApiClient(base_url=parsed.api_url)
     try:
-        list_loans_via_api(api, status=parsed.status, count_only=parsed.count)
+        with signed_in(api, parsed.user):
+            list_loans_via_api(api, status=parsed.status, count_only=parsed.count)
         return 0
     except ApiError as exc:
         print(f"ERROR: {exc}")
@@ -293,11 +358,13 @@ def main_trace_loan(argv: Optional[List[str]] = None, client: Optional[ApiClient
                         help="Application reference ID (case-insensitive), e.g. APP-2026-001.")
     parser.add_argument("--api-url", type=str, default=None,
                         help=f"Base URL of the underwriting service (default: {DEFAULT_API_URL}).")
+    add_auth_arguments(parser)
     parsed = parser.parse_args(args)
 
     api = client or ApiClient(base_url=parsed.api_url)
     try:
-        return 0 if trace_loan_via_api(api, parsed.app_id) else 1
+        with signed_in(api, parsed.user):
+            return 0 if trace_loan_via_api(api, parsed.app_id) else 1
     except ApiError as exc:
         print(f"ERROR: {exc}")
         return 1
@@ -348,11 +415,13 @@ def main_initiate_workflow(argv: Optional[List[str]] = None, client: Optional[Ap
                         help="Maximum number of new loan applications to process.")
     parser.add_argument("--api-url", type=str, default=None,
                         help=f"Base URL of the underwriting service (default: {DEFAULT_API_URL}).")
+    add_auth_arguments(parser)
     parsed = parser.parse_args(args)
 
     api = client or ApiClient(base_url=parsed.api_url)
     try:
-        initiate_workflow_via_api(api, dry_run=parsed.dry_run, limit=parsed.limit)
+        with signed_in(api, parsed.user):
+            initiate_workflow_via_api(api, dry_run=parsed.dry_run, limit=parsed.limit)
         return 0
     except ApiError as exc:
         print(f"ERROR: {exc}")

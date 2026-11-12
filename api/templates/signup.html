@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Apex Financial — Create your account</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏦</text></svg>" />
+  <link rel="stylesheet" href="/static/css/apex.css" />
+</head>
+<body class="auth-body" data-min-length="{{ password_min_length }}">
+<main class="auth-shell">
+  <div class="auth-card">
+    <div class="auth-brand">🏦 Apex Financial</div>
+    <div class="auth-sub">Create your applicant account</div>
+
+    <div id="auth-alert"></div>
+    <div id="auth-loading" class="txt-muted" style="font-size:0.8rem;"><span class="spinner"></span> Checking your session…</div>
+
+    <form id="signup-form" class="hidden" novalidate>
+      <label class="field-label" for="display_name">Your Name</label>
+      <input type="text" id="display_name" autocomplete="name" placeholder="e.g. Jane Doe" />
+      <label class="field-label" for="user_id" style="margin-top:10px;">Choose a User ID</label>
+      <input type="text" id="user_id" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="e.g. jane.doe" required />
+      <label class="field-label" for="password" style="margin-top:10px;">Choose a Password</label>
+      <input type="password" id="password" autocomplete="new-password" />
+      <label class="field-label" for="confirm_password" style="margin-top:10px;">Confirm Password</label>
+      <input type="password" id="confirm_password" autocomplete="new-password" />
+      <button type="submit" class="btn btn-primary btn-block" id="btn-sign-up" style="margin-top:14px;">Create account</button>
+    </form>
+
+    <div class="auth-foot"><a href="/login">Already have an account? Sign in</a></div>
+  </div>
+</main>
+<script src="/static/js/signup.js"></script>
+</body>
+</html>

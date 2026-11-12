@@ -105,9 +105,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 .header-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* --------------------------------------------------------------------------
-   Profile menu — fixed top-right corner of the page, every screen.
-   Today: the anonymous per-tab session; this is the slot a future sign-in / account menu will occupy, so it is
-   deliberately styled like a standard post-login profile icon (round avatar + dropdown) rather than a status pill.
+   Profile menu — fixed top-right corner of the page, every screen: the signed-in user (round avatar + dropdown
+   with name, user ID, role, Change password and Sign out).
    -------------------------------------------------------------------------- */
 .profile-menu { position: fixed; top: 14px; right: 18px; z-index: 200; }
 .profile-avatar {
@@ -126,12 +125,14 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 .profile-dropdown.open { display: block; }
 .profile-dropdown-caption { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .profile-dropdown-name { font-family: var(--mono); font-size: 0.92rem; font-weight: 700; margin-top: 2px; }
+.profile-dropdown-meta { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
 .profile-dropdown-note { font-size: 0.72rem; color: var(--text-3); margin-top: 6px; line-height: 1.4; }
 .profile-dropdown hr { margin: 10px 0; }
 .profile-dropdown-item {
-  width: 100%; text-align: left; background: none; border: 0; padding: 6px 0; font-size: 0.8rem;
-  color: var(--text-2); cursor: not-allowed; opacity: 0.6;
+  display: block; width: 100%; text-align: left; background: none; border: 0; padding: 6px 0; font-size: 0.8rem;
+  font-family: var(--sans); color: var(--text-2); cursor: pointer;
 }
+.profile-dropdown-item:hover { color: var(--blue-dark); }
 @media (max-width: 560px) { .profile-menu { top: 10px; right: 10px; } .profile-dropdown { right: -10px; } }
 
 /* --------------------------------------------------------------------------
@@ -182,12 +183,13 @@ label.field-label, .field-label {
   display: block; font-size: 0.76rem; font-weight: 600; color: var(--text-2);
   text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px;
 }
-input[type=text], input[type=number], select, textarea {
+input[type=text], input[type=number], input[type=password], input[type=date], select, textarea {
   width: 100%; font-family: var(--sans); font-size: 0.88rem; color: var(--text);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
   padding: 8px 10px; outline: none; transition: border-color .12s, box-shadow .12s;
 }
 input:focus, select:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+input[readonly] { background: var(--surface-alt); color: var(--text-3); }
 textarea { resize: vertical; min-height: 96px; }
 select.compact { padding: 5px 8px; font-size: 0.78rem; }
 .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--text-2); }
@@ -327,3 +329,37 @@ details summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: v
 
 /* Admin — partner batch intake: highlight the batch being inspected */
 .data-table tr.selected td { background: var(--blue-soft); }
+
+/* --------------------------------------------------------------------------
+   Sign-in page (/login) and sign-up page (/signup)
+   -------------------------------------------------------------------------- */
+.auth-body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.auth-shell { width: min(400px, 100%); }
+.auth-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 28px 28px 20px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+.auth-brand { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.01em; }
+.auth-sub { font-size: 0.8rem; color: var(--muted); margin: 2px 0 18px 0; }
+.auth-hint { font-size: 0.72rem; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+.auth-divider { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 0.7rem; color: var(--muted); }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.auth-foot { font-size: 0.78rem; text-align: center; margin-top: 16px; }
+
+/* --------------------------------------------------------------------------
+   Queue filter bars (Underwriter Desk)
+   -------------------------------------------------------------------------- */
+.filter-bar {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 10px; align-items: end;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.filter-bar .field-label { font-size: 0.66rem; }
+.filter-bar input, .filter-bar select { padding: 6px 8px; font-size: 0.8rem; }
+.filter-bar .filter-check, .filter-bar .filter-actions { align-self: end; padding-bottom: 4px; }
+.filter-summary { font-size: 0.74rem; color: var(--muted); margin: 0 0 10px 2px; }
+.filter-summary.error { color: var(--red-dark); }
+.queue-wait { font-size: 0.68rem; color: var(--muted); margin-left: 6px; }
+.get-work-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; }
+.get-work-bar .btn { white-space: nowrap; }
+.auto-next-row { margin-top: 10px; font-size: 0.78rem; }

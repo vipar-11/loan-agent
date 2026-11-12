@@ -1,8 +1,9 @@
 """
 Review checkouts: a PENDING_REVIEW application can be open for review by only one identity at a time.
 
-The holder is the caller's `UserIdentity` as established by `api.dependencies.establish_user_identity()` — today an
-anonymous per-browser-tab session, later an authenticated user. Holders are compared on `user_id` only.
+The holder is the caller's `UserIdentity` as established by `api.dependencies.establish_user_identity()`: the
+signed-in user in one browser tab (or the user as a whole, for API clients). Holders are compared on
+`UserIdentity.holder_key` only, so another tab of the same user is "another session" too.
 Other callers are never told who holds a file: listings, details and conflict messages say "another session"
 (OTHER_HOLDER_LABEL). Only the holder sees its own label; the regulatory audit trail records the real holder.
 
@@ -67,7 +68,7 @@ def _is_active(row: Optional[Dict[str, Any]], now_str: str) -> bool:
 
 def _holder_label(row: Dict[str, Any], viewer: Optional[UserIdentity]) -> str:
     """The holder's own label for the holder; an anonymous label for everybody else."""
-    if viewer is not None and row.get("holder_key") == viewer.user_id:
+    if viewer is not None and row.get("holder_key") == viewer.holder_key:
         return row["checked_out_by"]
     return OTHER_HOLDER_LABEL
 
@@ -77,7 +78,7 @@ def to_info(row: Dict[str, Any], viewer: Optional[UserIdentity] = None) -> Check
     return CheckoutInfo(
         application_id=row["application_id"],
         checked_out_by=_holder_label(row, viewer),
-        held_by_you=viewer is not None and row["holder_key"] == viewer.user_id,
+        held_by_you=viewer is not None and row["holder_key"] == viewer.holder_key,
         checked_out_at=row["checked_out_at"],
         expires_at=row["expires_at"],
         state=row.get("state") or "ACTIVE",
@@ -89,7 +90,7 @@ def to_info(row: Dict[str, Any], viewer: Optional[UserIdentity] = None) -> Check
 def _conflict_message(row: Dict[str, Any], viewer: UserIdentity) -> str:
     app_id = row.get("application_id", "?")
     if row.get("state") == "DECIDING":
-        where = "in this session" if row.get("holder_key") == viewer.user_id else f"by {OTHER_HOLDER_LABEL}"
+        where = "in this session" if row.get("holder_key") == viewer.holder_key else f"by {OTHER_HOLDER_LABEL}"
         return f"A determination for application '{app_id}' is already being recorded {where}."
     return (
         f"Application '{app_id}' is checked out by {OTHER_HOLDER_LABEL}. It can be opened once it is closed "
@@ -129,7 +130,8 @@ def active_checkout(
 # Launch / heartbeat / close
 # ---------------------------------------------------------------------------
 def _acquire(
-    db: ApplicationDatabase, record: Dict[str, Any], identity: UserIdentity, now: Optional[datetime]
+    db: ApplicationDatabase, record: Dict[str, Any], identity: UserIdentity, now: Optional[datetime],
+    via: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Returns (checkout row, newly_acquired). Raises ValueError / CheckoutConflict."""
     app_id = record["application_id"]
@@ -141,30 +143,62 @@ def _acquire(
     now_str, expires_str = _window(now)
     before = db.get_checkout(app_id)
     # upsert: a row always exists afterwards
-    row = db.acquire_checkout(app_id, identity.user_id, identity.display_name, now_str, expires_str)
-    if row is None or row["holder_key"] != identity.user_id or row.get("state") != "ACTIVE":
+    row = db.acquire_checkout(app_id, identity.holder_key, identity.display_name, now_str, expires_str)
+    if row is None or row["holder_key"] != identity.holder_key or row.get("state") != "ACTIVE":
         raise CheckoutConflict(_conflict_message(row or {}, identity), holder=row)
 
-    renewed = before is not None and _is_active(before, now_str) and before["holder_key"] == identity.user_id
+    renewed = before is not None and _is_active(before, now_str) and before["holder_key"] == identity.holder_key
     if not renewed:
-        details = f"Checked out for review by {identity.display_name} (lease {CHECKOUT_TTL_SECONDS}s)."
-        if before is not None and before["holder_key"] != identity.user_id:  # only possible once it had expired
+        how = f" via {via}" if via else ""
+        details = f"Checked out for review by {identity.display_name}{how} (lease {CHECKOUT_TTL_SECONDS}s)."
+        if before is not None and before["holder_key"] != identity.holder_key:  # only possible once it had expired
             details += f" Previous checkout by {before['checked_out_by']} had expired."
-        db.add_audit_event(app_id, "CHECKOUT_ACQUIRED", actor=identity.display_name,
+        db.add_audit_event(app_id, "CHECKOUT_ACQUIRED", actor=identity.audit_actor,
                            from_status=record["status"], to_status=record["status"], details=details)
     return row, not renewed
 
 
 def checkout(
-    db: ApplicationDatabase, application_id: str, identity: UserIdentity, now: Optional[datetime] = None
+    db: ApplicationDatabase, application_id: str, identity: UserIdentity, now: Optional[datetime] = None,
+    via: Optional[str] = None,
 ) -> CheckoutInfo:
     """
     Launch (or re-open) a review. Raises KeyError (unknown application), ValueError (not PENDING_REVIEW)
-    or CheckoutConflict (held by another identity).
+    or CheckoutConflict (held by another identity). `via` is noted in the audit trail (e.g. "Get Work").
     """
     record = _require_application(db, application_id)
-    row, _ = _acquire(db, record, identity, now)
+    row, _ = _acquire(db, record, identity, now, via=via)
     return to_info(row, identity)
+
+
+GET_WORK_BATCH = 25  # candidates fetched per round; more than enough to absorb concurrent "Get Work" clicks
+GET_WORK_ROUNDS = 3
+
+
+def checkout_next(
+    db: ApplicationDatabase, identity: UserIdentity, now: Optional[datetime] = None
+) -> Optional[CheckoutInfo]:
+    """
+    "Get Work": checks out the highest-priority file for `identity` and returns the checkout, or None when nothing
+    is available. Priority (decided by the database query, see next_reviewable_application_ids): a file the caller
+    already holds first — a reviewer never accumulates several — then the oldest PENDING_REVIEW submission that
+    nobody else has open. Each candidate is claimed with the same atomic acquire as a manual launch, so two
+    reviewers clicking at once never receive the same file: the one that loses the race just gets the next file.
+    """
+    now_str, _ = _window(now)
+    tried = set()
+    for _ in range(GET_WORK_ROUNDS):
+        candidates = [a for a in db.next_reviewable_application_ids(identity.holder_key, now_str, GET_WORK_BATCH)
+                      if a not in tried]
+        if not candidates:
+            return None
+        for app_id in candidates:
+            tried.add(app_id)
+            try:
+                return checkout(db, app_id, identity, now, via="Get Work")
+            except (CheckoutConflict, ValueError, KeyError):
+                continue  # claimed by someone else meanwhile, or no longer awaiting review: next candidate
+    return None
 
 
 def renew(
@@ -174,11 +208,11 @@ def renew(
     record = _require_application(db, application_id)
     app_id = record["application_id"]
     _, expires_str = _window(now)
-    if not db.renew_checkout(app_id, identity.user_id, expires_str):
+    if not db.renew_checkout(app_id, identity.holder_key, expires_str):
         row = db.get_checkout(app_id)
         if row and _is_active(row, _fmt(now or _now())):
             reason = f"it is now checked out by {OTHER_HOLDER_LABEL}"
-            if row["holder_key"] == identity.user_id:
+            if row["holder_key"] == identity.holder_key:
                 reason = "a determination is being recorded"
         elif (record.get("status") or "").upper() != REVIEWABLE_STATUS:
             reason = f"it is no longer awaiting review (status={record.get('status')})"
@@ -193,11 +227,11 @@ def release(
     application_id: str,
     identity: UserIdentity,
     force: bool = False,
-    actor: Optional[str] = None,
 ) -> bool:
     """
-    Close a review. Only the caller's own checkout is released unless `force` (administrator override).
-    Returns True if a checkout was released. Raises KeyError (unknown application).
+    Close a review. Only the caller's own checkout is released unless `force` (administrator override — the
+    caller's permission to force is checked by the router). Returns True if a checkout was released.
+    Raises KeyError (unknown application).
     """
     record = _require_application(db, application_id)
     app_id = record["application_id"]
@@ -207,16 +241,16 @@ def release(
     if force:
         released = db.release_checkout(app_id)
         if released:
-            db.add_audit_event(app_id, "CHECKOUT_FORCE_RELEASED", actor=actor or identity.display_name,
+            db.add_audit_event(app_id, "CHECKOUT_FORCE_RELEASED", actor=identity.audit_actor,
                                from_status=record["status"], to_status=record["status"],
                                details=f"Checkout held by {row['checked_out_by']} was force-released "
-                                       f"(requested from {identity.display_name}).")
+                                       f"by {identity.display_name}.")
         return released
-    if row["holder_key"] != identity.user_id or row.get("state") != "ACTIVE":
+    if row["holder_key"] != identity.holder_key or row.get("state") != "ACTIVE":
         return False  # not the holder (or a determination is in flight): nothing to release
-    released = db.release_checkout(app_id, identity.user_id)
+    released = db.release_checkout(app_id, identity.holder_key)
     if released:
-        db.add_audit_event(app_id, "CHECKOUT_RELEASED", actor=identity.display_name,
+        db.add_audit_event(app_id, "CHECKOUT_RELEASED", actor=identity.audit_actor,
                            from_status=record["status"], to_status=record["status"],
                            details=f"Review closed by {identity.display_name}; file returned to the queue.")
     return released
@@ -236,7 +270,7 @@ def begin_decision(
     record = _require_application(db, application_id)
     row, newly_acquired = _acquire(db, record, identity, now)
     now_str, expires_str = _window(now)
-    if not db.claim_checkout_for_decision(row["application_id"], identity.user_id, now_str, expires_str):
+    if not db.claim_checkout_for_decision(row["application_id"], identity.holder_key, now_str, expires_str):
         # Lost the race to a concurrent determination by the same identity (e.g. a double-click).
         current = db.get_checkout(row["application_id"]) or row
         raise CheckoutConflict(_conflict_message({**current, "state": "DECIDING"}, identity), holder=current)
@@ -251,6 +285,6 @@ def end_decision(db: ApplicationDatabase, application_id: str) -> None:
 def abort_decision(db: ApplicationDatabase, application_id: str, identity: UserIdentity, held_before: bool) -> None:
     """The determination failed: give the file back to the holder, or drop an implicit checkout."""
     if held_before:
-        db.restore_checkout(application_id, identity.user_id)
+        db.restore_checkout(application_id, identity.holder_key)
     else:
-        db.release_checkout(application_id, identity.user_id)
+        db.release_checkout(application_id, identity.holder_key)

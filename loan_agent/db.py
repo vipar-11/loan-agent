@@ -3,9 +3,10 @@ Application Database Manager for Loan Underwriting.
 Manages persistent storage for loan applications, metadata, adjudication outcomes, and audit trails.
 Supports both local SQLite and remote PostgreSQL storage.
 """
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 import functools
 import json
 import os
@@ -68,6 +69,33 @@ def normalize_status_filter(status: Optional[str]) -> Optional[List[str]]:
     else:
         # Fall back to exact case-insensitive match
         return [status.strip().upper(), status.strip()]
+
+
+@dataclass(frozen=True)
+class ApplicationQuery:
+    """
+    Criteria for `ApplicationDatabase.query_applications()`. Every criterion is translated into the SQL WHERE /
+    ORDER BY / LIMIT clauses — nothing is filtered or sorted in memory — and all criteria that are set must match.
+    """
+
+    statuses: Optional[Sequence[str]] = None          # status IN (...), case-insensitive
+    exclude_statuses: Optional[Sequence[str]] = None  # status NOT IN (...), case-insensitive
+    submitted_by: Optional[str] = None                # owning self-service applicant (user ID)
+    decided_by: Optional[str] = None                  # user ID of the officer who recorded the determination
+    search: Optional[str] = None                      # applicant name or application ID: case-insensitive substring
+    loan_purpose: Optional[str] = None                # exact, case-insensitive
+    min_amount: Optional[float] = None                # loan_amount_requested >= (inclusive)
+    max_amount: Optional[float] = None                # loan_amount_requested <= (inclusive)
+    submitted_from: Optional[str] = None              # submitted_at >= this timestamp (inclusive)
+    submitted_before: Optional[str] = None            # submitted_at <  this timestamp (exclusive)
+    oldest_first: bool = False                        # ORDER BY submitted_at ASC (first in, first out) vs DESC
+    limit: Optional[int] = None
+
+
+def _like_pattern(text: str) -> str:
+    """Substring LIKE pattern with the user's own % and _ treated literally (used with ESCAPE '!')."""
+    escaped = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"%{escaped}%"
 
 
 class ApplicationIdConflict(Exception):
@@ -141,7 +169,9 @@ class ApplicationDatabase:
                     submitted_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     adjudication TEXT,
-                    graph_state TEXT
+                    graph_state TEXT,
+                    submitted_by TEXT,
+                    decided_by TEXT
                 );
                 """
             )
@@ -263,7 +293,9 @@ class ApplicationDatabase:
                     submitted_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     adjudication TEXT,
-                    graph_state TEXT
+                    graph_state TEXT,
+                    submitted_by TEXT,
+                    decided_by TEXT
                 );
                 """
             )
@@ -370,6 +402,102 @@ class ApplicationDatabase:
                 """
             )
             self.conn.commit()
+        self._migrate_schema()
+        self._initialize_auth_schema()
+
+    def _migrate_schema(self) -> None:
+        """
+        Additive, idempotent schema changes for databases created before these columns existed.
+
+        `submitted_by` — the self-service applicant's user ID; NULL for applications with no owning account
+        (Applicant Portal submissions before self-signup existed, partner batch / admin-triggered submissions).
+        `decided_by` — the user ID of the officer who recorded a human determination (mirrors
+        adjudication.officer_user_id, kept in step by save_application), so "decided by me" is an indexed column
+        comparison instead of a scan of the adjudication JSON.
+        """
+        cursor = self.conn.cursor()
+        for column in ("submitted_by", "decided_by"):
+            if self.backend == "sqlite":
+                try:
+                    cursor.execute(f"ALTER TABLE loan_applications ADD COLUMN {column} TEXT")
+                    self.conn.commit()
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+                    self.conn.rollback()
+            else:
+                cursor.execute(f"ALTER TABLE loan_applications ADD COLUMN IF NOT EXISTS {column} TEXT")
+                self.conn.commit()
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_loan_apps_submitted_by ON loan_applications(submitted_by);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_loan_apps_decided_by ON loan_applications(decided_by);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_loan_apps_submitted_at ON loan_applications(submitted_at);")
+        self.conn.commit()
+        self._backfill_decided_by()
+
+    def _backfill_decided_by(self) -> None:
+        """One-off for determinations recorded before the decided_by column existed (no-op once backfilled)."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT application_id, adjudication FROM loan_applications "
+            "WHERE decided_by IS NULL AND adjudication LIKE '%officer_user_id%'"
+        )
+        for row in cursor.fetchall():
+            officer = (self._deserialize(dict(row)["adjudication"]) or {})
+            user_id = officer.get("officer_user_id") if isinstance(officer, dict) else None
+            if user_id:
+                cursor.execute(f"UPDATE loan_applications SET decided_by = {p} WHERE application_id = {p}",
+                               (user_id, dict(row)["application_id"]))
+        self.conn.commit()
+
+    def _initialize_auth_schema(self) -> None:
+        """
+        Sign-in users and sessions (see loan_agent/auth). The DDL is portable: identical on SQLite and PostgreSQL.
+
+        app_users.password_hash is NULL until the user sets a password (the "empty default password");
+        auth_provider / external_subject let SSO-linked accounts (no local password) live in the same table.
+        auth_sessions stores only a SHA-256 hash of each session token, never the token itself.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_users (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                password_hash TEXT,
+                must_change_password INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                auth_provider TEXT NOT NULL DEFAULT 'local',
+                external_subject TEXT,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT,
+                last_login_at TEXT,
+                password_changed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_app_users_external_subject "
+            "ON app_users(auth_provider, external_subject) WHERE external_subject IS NOT NULL;"
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                auth_method TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT
+            );
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);")
+        self.conn.commit()
 
     def _serialize(self, obj: Any) -> Optional[str]:
         if obj is None:
@@ -409,6 +537,8 @@ class ApplicationDatabase:
         updated_at = now_str
 
         adj_json = self._serialize(app_data.get("adjudication"))
+        adjudication = app_data.get("adjudication")
+        decided_by = adjudication.get("officer_user_id") if isinstance(adjudication, dict) else None
         state_json = self._serialize(app_data.get("graph_state"))
         fcra_int = 1 if app_data.get("fcra_consent") else 0
 
@@ -427,7 +557,8 @@ class ApplicationDatabase:
                     status = {placeholder},
                     updated_at = {placeholder},
                     adjudication = {placeholder},
-                    graph_state = {placeholder}
+                    graph_state = {placeholder},
+                    decided_by = {placeholder}
                 WHERE UPPER(application_id) = UPPER({placeholder})
             """
             cursor.execute(
@@ -443,6 +574,7 @@ class ApplicationDatabase:
                     updated_at,
                     adj_json,
                     state_json,
+                    decided_by,
                     app_id,
                 ),
             )
@@ -451,8 +583,8 @@ class ApplicationDatabase:
                 INSERT INTO loan_applications (
                     application_id, applicant_name, ssn_last_4, stated_annual_income,
                     loan_amount_requested, loan_purpose, fcra_consent, status,
-                    submitted_at, updated_at, adjudication, graph_state
-                ) VALUES ({', '.join([placeholder] * 12)})
+                    submitted_at, updated_at, adjudication, graph_state, submitted_by, decided_by
+                ) VALUES ({', '.join([placeholder] * 14)})
             """
             cursor.execute(
                 query,
@@ -469,6 +601,8 @@ class ApplicationDatabase:
                     updated_at,
                     adj_json,
                     state_json,
+                    app_data.get("submitted_by"),
+                    decided_by,
                 ),
             )
 
@@ -560,37 +694,105 @@ class ApplicationDatabase:
         )
         return True
 
+    def _row_to_application(self, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        data["fcra_consent"] = bool(data["fcra_consent"])
+        data["adjudication"] = self._deserialize(data.get("adjudication"))
+        data["graph_state"] = self._deserialize(data.get("graph_state"))
+        return data
+
+    def _where(self, query: "ApplicationQuery") -> Tuple[str, List[Any]]:
+        """WHERE clause + parameters for an ApplicationQuery (shared by query_applications and count queries)."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        clauses: List[str] = []
+        params: List[Any] = []
+        if query.statuses:
+            statuses = sorted({s.upper() for s in query.statuses})
+            clauses.append(f"UPPER(status) IN ({', '.join([p] * len(statuses))})")
+            params.extend(statuses)
+        if query.exclude_statuses:
+            excluded = sorted({s.upper() for s in query.exclude_statuses})
+            clauses.append(f"UPPER(status) NOT IN ({', '.join([p] * len(excluded))})")
+            params.extend(excluded)
+        if query.submitted_by is not None:
+            clauses.append(f"submitted_by = {p}")
+            params.append(query.submitted_by)
+        if query.decided_by is not None:
+            clauses.append(f"decided_by = {p}")
+            params.append(query.decided_by)
+        if query.search and query.search.strip():
+            pattern = _like_pattern(query.search.strip().lower())
+            clauses.append(f"(LOWER(applicant_name) LIKE {p} ESCAPE '!' OR LOWER(application_id) LIKE {p} ESCAPE '!')")
+            params.extend([pattern, pattern])
+        if query.loan_purpose:
+            clauses.append(f"LOWER(loan_purpose) = {p}")
+            params.append(query.loan_purpose.lower())
+        if query.min_amount is not None:
+            clauses.append(f"loan_amount_requested >= {p}")
+            params.append(float(query.min_amount))
+        if query.max_amount is not None:
+            clauses.append(f"loan_amount_requested <= {p}")
+            params.append(float(query.max_amount))
+        if query.submitted_from:
+            clauses.append(f"submitted_at >= {p}")  # fixed-width timestamps: string order == time order
+            params.append(query.submitted_from)
+        if query.submitted_before:
+            clauses.append(f"submitted_at < {p}")
+            params.append(query.submitted_before)
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
     @_synchronized
-    def list_applications(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def query_applications(self, query: Optional["ApplicationQuery"] = None) -> List[Dict[str, Any]]:
         """
-        Lists application records, optionally filtered by normalized status.
-        Returns records ordered by submission time descending.
+        Applications matching `query`, filtered, ordered and limited by the database itself.
+        Order: submission time (oldest or newest first), ties broken by application ID so it is stable.
         """
+        query = query or ApplicationQuery()
+        p = "?" if self.backend == "sqlite" else "%s"
+        where, params = self._where(query)
+        direction = "ASC" if query.oldest_first else "DESC"
+        sql = f"SELECT * FROM loan_applications{where} ORDER BY submitted_at {direction}, application_id {direction}"
+        if query.limit is not None:
+            sql += f" LIMIT {p}"
+            params.append(int(query.limit))
         cursor = self.conn.cursor()
-        norm_statuses = normalize_status_filter(status)
-        placeholder = "?" if self.backend == "sqlite" else "%s"
+        cursor.execute(sql, params)
+        return [self._row_to_application(r) for r in cursor.fetchall()]
 
-        if norm_statuses:
-            placeholders = ", ".join([placeholder] * len(norm_statuses))
-            query = f"""
-                SELECT * FROM loan_applications
-                WHERE UPPER(status) IN ({placeholders})
-                ORDER BY submitted_at DESC
-            """
-            cursor.execute(query, [s.upper() for s in norm_statuses])
-        else:
-            query = "SELECT * FROM loan_applications ORDER BY submitted_at DESC"
-            cursor.execute(query)
+    def list_applications(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Application records, optionally filtered by normalized status, newest first."""
+        return self.query_applications(ApplicationQuery(statuses=normalize_status_filter(status)))
 
-        rows = cursor.fetchall()
-        results = []
-        for r in rows:
-            data = dict(r)
-            data["fcra_consent"] = bool(data["fcra_consent"])
-            data["adjudication"] = self._deserialize(data.get("adjudication"))
-            data["graph_state"] = self._deserialize(data.get("graph_state"))
-            results.append(data)
-        return results
+    def list_applications_for_user(self, submitted_by: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Applications owned by one self-service user (`submitted_by`), newest first. Never returns another user's."""
+        return self.query_applications(
+            ApplicationQuery(submitted_by=submitted_by, statuses=normalize_status_filter(status))
+        )
+
+    @_synchronized
+    def next_reviewable_application_ids(self, holder_key: str, now_str: str, limit: int = 25) -> List[str]:
+        """
+        "Get Work" candidates, highest priority first: PENDING_REVIEW applications that nobody else has checked out
+        (no checkout, an expired one, or one held by `holder_key` itself — those come first, so a reviewer is handed
+        back the file they already hold rather than a second one), then oldest submission first.
+        The caller claims a candidate with the atomic acquire_checkout(); losing a race simply means trying the next.
+        """
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT a.application_id
+            FROM loan_applications a
+            LEFT JOIN application_checkouts c
+                   ON c.application_id = a.application_id AND c.expires_at > {p}
+            WHERE UPPER(a.status) = 'PENDING_REVIEW'
+              AND (c.application_id IS NULL OR c.holder_key = {p})
+            ORDER BY CASE WHEN c.holder_key = {p} THEN 0 ELSE 1 END, a.submitted_at ASC, a.application_id ASC
+            LIMIT {p}
+            """,
+            (now_str, holder_key, holder_key, int(limit)),
+        )
+        return [dict(r)["application_id"] for r in cursor.fetchall()]
 
     @_synchronized
     def count_applications(self, status: Optional[str] = None) -> int:
@@ -629,11 +831,12 @@ class ApplicationDatabase:
 
         cursor = self.conn.cursor()
         placeholder = "?" if self.backend == "sqlite" else "%s"
+        returning = "" if self.backend == "sqlite" else " RETURNING id"
 
         query = f"""
             INSERT INTO loan_audit_trail (
                 application_id, timestamp, event_type, actor, from_status, to_status, details
-            ) VALUES ({', '.join([placeholder] * 7)})
+            ) VALUES ({', '.join([placeholder] * 7)}){returning}
         """
         cursor.execute(
             query,
@@ -647,8 +850,9 @@ class ApplicationDatabase:
                 details_str,
             ),
         )
+        event_id = cursor.lastrowid if self.backend == "sqlite" else list(cursor.fetchone().values())[0]
         self.conn.commit()
-        return cursor.lastrowid or 0
+        return int(event_id or 0)
 
     @_synchronized
     def get_audit_trail(self, application_id: str) -> List[Dict[str, Any]]:
@@ -773,9 +977,10 @@ class ApplicationDatabase:
     # ------------------------------------------------------------------
     # Review checkouts (one holder per PENDING_REVIEW application at a time)
     #
-    # holder_key is the caller's opaque identity key (today a per-browser-tab session token; later an
-    # authenticated user ID); checked_out_by is its display label. Every mutation is a single conditional
-    # SQL statement, so exclusivity holds across threads, worker processes and hosts sharing the database.
+    # holder_key is the caller's opaque identity key (the signed-in user ID combined with the browser tab's
+    # session, see api.schemas.UserIdentity.holder_key); checked_out_by is its display label. Every mutation is a
+    # single conditional SQL statement, so exclusivity holds across threads, worker processes and hosts sharing
+    # the database.
     # Timestamps use the fixed-width "%Y-%m-%d %H:%M:%S" format and are compared as strings.
     # ------------------------------------------------------------------
     @_synchronized
@@ -1059,6 +1264,167 @@ class ApplicationDatabase:
         cursor.execute(f"SELECT * FROM system_settings WHERE key = {placeholder}", (key,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Sign-in users (loan_agent.auth). user_id is stored normalized (lowercase) by the auth layer.
+    # ------------------------------------------------------------------
+    _USER_FIELDS = {
+        "display_name", "role", "password_hash", "must_change_password", "is_active", "auth_provider",
+        "external_subject", "failed_attempts", "locked_until", "last_login_at", "password_changed_at",
+    }
+    _USER_BOOL_FIELDS = ("must_change_password", "is_active")
+
+    def _row_to_user(self, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        for key in self._USER_BOOL_FIELDS:
+            if key in data:
+                data[key] = bool(data[key])
+        return data
+
+    def _user_values(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        unknown = set(updates) - self._USER_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown user field(s): {', '.join(sorted(unknown))}")
+        return {k: (int(bool(v)) if k in self._USER_BOOL_FIELDS else v) for k, v in updates.items()}
+
+    @_synchronized
+    def create_user(self, user_id: str, display_name: str, role: str, **fields: Any) -> Dict[str, Any]:
+        """Inserts a user. Raises ValueError if the user ID is already taken."""
+        if self.get_user(user_id):
+            raise ValueError(f"User '{user_id}' already exists.")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        values = {"display_name": display_name, "role": role, **self._user_values(fields)}
+        columns = ["user_id", *values.keys(), "created_at", "updated_at"]
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"INSERT INTO app_users ({', '.join(columns)}) VALUES ({', '.join([p] * len(columns))})",
+            (user_id, *values.values(), now_str, now_str),
+        )
+        self.conn.commit()
+        return self.get_user(user_id)  # type: ignore[return-value]
+
+    @_synchronized
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM app_users WHERE user_id = {p}", (user_id,))
+        row = cursor.fetchone()
+        return self._row_to_user(row) if row else None
+
+    @_synchronized
+    def list_users(self) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM app_users ORDER BY role, user_id")
+        return [self._row_to_user(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def update_user(self, user_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        values = self._user_values(updates)
+        if values:
+            p = "?" if self.backend == "sqlite" else "%s"
+            values["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            assignments = ", ".join(f"{k} = {p}" for k in values)
+            cursor = self.conn.cursor()
+            cursor.execute(f"UPDATE app_users SET {assignments} WHERE user_id = {p}", (*values.values(), user_id))
+            self.conn.commit()
+        return self.get_user(user_id)
+
+    @_synchronized
+    def record_failed_sign_in(self, user_id: str, threshold: int, locked_until_str: str) -> None:
+        """
+        Counts a failed sign-in atomically; the attempt that reaches `threshold` locks the account until
+        `locked_until_str` and restarts the count (so the user gets `threshold` fresh attempts after the lock).
+        """
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"""
+            UPDATE app_users SET
+                locked_until = CASE WHEN failed_attempts + 1 >= {p} THEN {p} ELSE locked_until END,
+                failed_attempts = CASE WHEN failed_attempts + 1 >= {p} THEN 0 ELSE failed_attempts + 1 END
+            WHERE user_id = {p}
+            """,
+            (threshold, locked_until_str, threshold, user_id),
+        )
+        self.conn.commit()
+
+    @_synchronized
+    def record_successful_sign_in(self, user_id: str, now_str: str) -> None:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE app_users SET failed_attempts = 0, locked_until = NULL, last_login_at = {p} WHERE user_id = {p}",
+            (now_str, user_id),
+        )
+        self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # Sign-in sessions (browser cookie and API bearer tokens share this table; only token hashes are stored)
+    # ------------------------------------------------------------------
+    @_synchronized
+    def create_auth_session(
+        self, token_hash: str, user_id: str, auth_method: str, now_str: str, expires_str: str
+    ) -> None:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"INSERT INTO auth_sessions (token_hash, user_id, auth_method, created_at, last_seen_at, expires_at) "
+            f"VALUES ({p}, {p}, {p}, {p}, {p}, {p})",
+            (token_hash, user_id, auth_method, now_str, now_str, expires_str),
+        )
+        self.conn.commit()
+
+    @_synchronized
+    def get_auth_session(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT * FROM auth_sessions WHERE token_hash = {p}", (token_hash,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    @_synchronized
+    def touch_auth_session(self, token_hash: str, now_str: str) -> None:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(f"UPDATE auth_sessions SET last_seen_at = {p} WHERE token_hash = {p}", (now_str, token_hash))
+        self.conn.commit()
+
+    @_synchronized
+    def revoke_auth_session(self, token_hash: str, now_str: str) -> bool:
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE auth_sessions SET revoked_at = {p} WHERE token_hash = {p} AND revoked_at IS NULL",
+            (now_str, token_hash),
+        )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def revoke_user_auth_sessions(self, user_id: str, now_str: str, except_token_hash: Optional[str] = None) -> int:
+        """Signs the user out everywhere (optionally keeping one session, e.g. the one changing the password)."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE auth_sessions SET revoked_at = {p} "
+            f"WHERE user_id = {p} AND revoked_at IS NULL AND token_hash <> {p}",
+            (now_str, user_id, except_token_hash or ""),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
+    def purge_auth_sessions(self, expired_before_str: str) -> int:
+        """Deletes sessions that expired (or were revoked) before the given time."""
+        p = "?" if self.backend == "sqlite" else "%s"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"DELETE FROM auth_sessions WHERE expires_at < {p} OR revoked_at < {p}",
+            (expired_before_str, expired_before_str),
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     @_synchronized
     def close(self) -> None:

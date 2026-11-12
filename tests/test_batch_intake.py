@@ -17,6 +17,7 @@ from api.main import create_app
 from api.services import batch_intake as intake
 from api.services import workflows as workflow_service
 from loan_agent.config import IntakeConfig, load_intake_config
+from tests.conftest import sign_in_as
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "partner_kit" / "loan_batch_sample.csv"
@@ -326,6 +327,7 @@ def admin_client(cfg, test_app_db, test_checkpointer) -> Generator[TestClient, N
     app = create_app(scheduler_enabled=False, intake_enabled=False, intake_config=cfg)
     app.dependency_overrides[get_db] = lambda: test_app_db
     app.dependency_overrides[get_checkpointer] = lambda: test_checkpointer
+    sign_in_as(app)  # functional tests run as the all-permissions test operator (see conftest.py)
     with TestClient(app) as c:
         yield c
 
@@ -366,6 +368,7 @@ class TestBackgroundMonitor:
         db = db_module.get_application_database()  # the instance the lifespan uses (isolated by conftest)
         app = create_app(scheduler_enabled=False, intake_enabled=True, intake_config=cfg)
         app.dependency_overrides[get_db] = lambda: db
+        sign_in_as(app)
         with TestClient(app) as c:
             assert c.get("/api/v1/admin/intake").json()["monitoring"] is True
             drop(cfg, SAMPLE.name, SAMPLE.read_bytes())

@@ -7,6 +7,8 @@
 #   3. Installs requirements.txt and requirements-dev.txt
 #   4. Prepares the partner batch-intake folders (inbox/outbox/...) for every partner approved
 #      in batch_intake.ini
+#   5. Creates the default sign-in accounts for the three personas via manage_users.py
+#      ('applicant', 'underwriter', 'admin'); existing accounts are left unchanged
 #
 # Usage (recommended — keeps the venv active in your current shell):
 #   source ./setup_env.sh
@@ -92,14 +94,24 @@ else:
     print('   ⚠️  No approved partners configured — add them under [approved_partners] in batch_intake.ini.')
 " ) || _apex_fail "Failed to prepare batch-intake folders (is batch_intake.ini present and valid?)." || return 1
 
+# 5. Default sign-in accounts for the three personas, in the application database configured in dbconfig.ini.
+#    Idempotent: accounts that already exist (and their passwords) are left untouched. Not fatal: with remote
+#    storage the database may not be reachable yet — re-run `python manage_users.py` once it is.
+echo "▶ Creating default sign-in accounts (manage_users.py)..."
+( cd "$PROJECT_ROOT" && python manage_users.py ) || {
+  echo "   ⚠️  Could not create the default accounts (is the application database in dbconfig.ini reachable?)."
+  echo "      Re-run later with:  python manage_users.py"
+}
+
 echo
 echo "✅ Sandbox ready."
 echo "   Python : $(python --version 2>&1) at $(command -v python)"
 echo
 echo "   Next steps:"
 echo "     cp .env.example .env            # (if present) add GROQ_API_KEY / OPENAI_API_KEY / LLM_API_KEY"
-echo "     python run_api.py --reload      # FastAPI agentic service  -> http://localhost:8000/portal"
-echo "     streamlit run agentic_app.py    # Streamlit agentic workbench (legacy, co-existing)"
+echo "     python manage_users.py --list   # sign-in accounts (applicant / underwriter / admin were created above)"
+echo "     python run_api.py --reload      # FastAPI agentic service  -> http://localhost:8000/login"
+echo "     streamlit run agentic_app.py    # retired: redirects to the FastAPI workbench"
 echo "     streamlit run app.py            # Streamlit manual workbench"
 echo "     pytest -m \"not integration\"     # test suite"
 echo "     edit batch_intake.ini           # add/remove approved partners, then re-run this script"

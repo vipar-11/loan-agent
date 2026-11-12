@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Apex Financial — My Applications{% endblock %}
+{% block subtitle %}My Loan Applications{% endblock %}
+
+{% block sidebar %}
+  <div class="sys-box" style="font-size:0.72rem; line-height:1.4;">
+    <strong>⏱ Our service level</strong><br />
+    We aim to deliver a decision within <strong>{{ sla_business_days }} business days</strong> of submission. You
+    do not need to do anything while your application is under review — this page updates automatically.
+  </div>
+{% endblock %}
+
+{% block content %}
+<div class="fin-card" style="padding:12px 18px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+  <div>
+    <div class="card-title" style="margin-bottom:2px;">My Loan Applications</div>
+    <div class="card-sub">Track the status of every application you have submitted. Decisions are typically made within {{ sla_business_days }} business days.</div>
+  </div>
+  <a class="btn btn-primary" href="/portal">➕ New Application</a>
+</div>
+
+<div id="status-alert"></div>
+<div id="status-list"></div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/js/status.js"></script>{% endblock %}

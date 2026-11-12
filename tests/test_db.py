@@ -191,6 +191,42 @@ class TestApplicationDatabase:
         assert db.backend == "postgres"
         assert db.count_applications() == 3
 
+    def test_add_audit_event_on_postgres_does_not_use_lastrowid(self, monkeypatch):
+        """
+        Regression test: psycopg3 cursors have no `lastrowid` attribute at all (unlike sqlite3's), so
+        add_audit_event() must fetch the id via `RETURNING id`, like create_workflow_run / create_intake_batch
+        already do. A plain MagicMock would auto-create `.lastrowid` and hide this bug, so the fake cursor below
+        mirrors the real psycopg3 cursor instead: no such attribute.
+        """
+
+        class NoLastrowidCursor:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=None):
+                self.queries.append(query)
+
+            def fetchone(self):
+                return {"id": 42}
+
+            def fetchall(self):  # schema initialization (decided_by backfill) lists rows
+                return []
+
+        mock_cursor = NoLastrowidCursor()
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        cfg = DatabaseConfig(
+            mode="remote", local_app_db_path=Path("dummy.db"), local_langgraph_db_path=Path("dummy_lg.db"),
+            remote_app_db_url="postgresql://localhost:5432/app", remote_langgraph_db_url="postgresql://localhost:5432/lg",
+        )
+        monkeypatch.setattr("psycopg.connect", MagicMock(return_value=mock_conn))
+        db = ApplicationDatabase(config=cfg, in_memory=False)
+
+        event_id = db.add_audit_event("APP-1", "TEST_EVENT", actor="tester")
+        assert event_id == 42
+        assert "RETURNING id" in mock_cursor.queries[-1]
+
     def test_serialization_and_deserialization_edge_cases(self, test_app_db):
         assert test_app_db._serialize("already_string") == "already_string"
         assert test_app_db._serialize(None) is None
@@ -226,4 +262,78 @@ class TestApplicationDatabase:
         assert instance is not None
         assert db_mod._GLOBAL_APP_DB is instance
         instance.close()
+
+
+class TestApplicationOwnership:
+    """submitted_by (the self-service Loan Applicant's user ID) and GET /api/v1/applications/mine's backing query."""
+
+    def test_submitted_by_round_trips_and_survives_updates(self, test_app_db):
+        app_data = {
+            "application_id": "APP-OWN-1", "applicant_name": "Jane Doe", "ssn_last_4": "1111",
+            "stated_annual_income": 90000.0, "loan_amount_requested": 10000.0, "loan_purpose": "Other",
+            "fcra_consent": True, "status": "NEW", "submitted_by": "jane.doe",
+        }
+        saved = test_app_db.insert_new_application(app_data, actor="jane.doe")
+        assert saved["submitted_by"] == "jane.doe"
+
+        # ownership is never part of an update payload, and survives regardless
+        test_app_db.update_application("APP-OWN-1", {"status": "PENDING_PROCESSING"}, actor="WORKFLOW_ENGINE")
+        assert test_app_db.get_application("APP-OWN-1")["submitted_by"] == "jane.doe"
+
+    def test_submitted_by_defaults_to_null(self, test_app_db):
+        app_data = {
+            "application_id": "APP-OWN-2", "applicant_name": "Partner Borrower", "ssn_last_4": "2222",
+            "stated_annual_income": 50000.0, "loan_amount_requested": 5000.0, "loan_purpose": "Other",
+            "fcra_consent": True, "status": "NEW",
+        }
+        saved = test_app_db.insert_new_application(app_data, actor="PARTNER:ACME")
+        assert saved["submitted_by"] is None
+
+    def test_list_applications_for_user_is_scoped_and_ordered(self, test_app_db):
+        for i, (owner, status_) in enumerate([("jane", "NEW"), ("bob", "NEW"), ("jane", "AUTO_APPROVED")]):
+            test_app_db.insert_new_application(
+                {"application_id": f"APP-U-{i}", "applicant_name": "X", "ssn_last_4": "0000",
+                 "stated_annual_income": 1.0, "loan_amount_requested": 1.0, "loan_purpose": "Other",
+                 "fcra_consent": True, "status": status_, "submitted_by": owner},
+                actor=owner,
+            )
+        jane_apps = test_app_db.list_applications_for_user("jane")
+        assert {a["application_id"] for a in jane_apps} == {"APP-U-0", "APP-U-2"}
+        assert test_app_db.list_applications_for_user("jane", status="approved") == \
+            [a for a in jane_apps if a["application_id"] == "APP-U-2"]
+        assert test_app_db.list_applications_for_user("nobody") == []
+
+    def test_migration_adds_the_column_to_a_pre_existing_database(self, tmp_path):
+        """A database created before ownership existed gains the column (and stays usable) on the next open."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE loan_applications (
+                application_id TEXT PRIMARY KEY, applicant_name TEXT NOT NULL, ssn_last_4 TEXT NOT NULL,
+                stated_annual_income REAL NOT NULL, loan_amount_requested REAL NOT NULL, loan_purpose TEXT NOT NULL,
+                fcra_consent INTEGER NOT NULL, status TEXT NOT NULL, submitted_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, adjudication TEXT, graph_state TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO loan_applications (application_id, applicant_name, ssn_last_4, stated_annual_income, "
+            "loan_amount_requested, loan_purpose, fcra_consent, status, submitted_at, updated_at) "
+            "VALUES ('APP-OLD-1','Legacy','0000',1,1,'Other',1,'NEW','2025-01-01 00:00:00','2025-01-01 00:00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = ApplicationDatabase(db_path=db_path)  # initialize_schema() runs the migration
+        try:
+            record = db.get_application("APP-OLD-1")
+            assert record["submitted_by"] is None
+            assert db.list_applications_for_user("jane") == []  # the old row belongs to nobody, not an error
+            # re-opening (column already present) is a no-op, not an error
+            ApplicationDatabase(db_path=db_path).close()
+        finally:
+            db.close()
 

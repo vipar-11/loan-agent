@@ -1,7 +1,9 @@
 """
 test_checkout.py
-Review checkouts: a PENDING_REVIEW file can be open for review by only one identity at a time.
-Identities are per-browser-tab sessions carried in the X-Apex-Session-Id header (see test_identity.py).
+Review checkouts: a PENDING_REVIEW file can be open for review by only one holder at a time.
+A holder is a signed-in user in one browser tab (tab session carried in the X-Apex-Session-Id header, see
+test_identity.py), so another tab of the SAME user is excluded as well. The tabs below all belong to the signed-in
+test operator (conftest.OPERATOR); test_identity.py covers two different users.
 """
 import threading
 import uuid
@@ -12,6 +14,7 @@ import pytest
 from api.dependencies import SESSION_HEADER
 from api.schemas import UserIdentity
 from api.services import checkout as checkout_service
+from loan_agent.auth import Principal, Role
 from loan_agent.db import ApplicationDatabase
 from tests.test_api import client, escalated_app_id, persona_payload  # noqa: F401  (pytest fixtures)
 
@@ -40,12 +43,11 @@ def release(client, app_id, tab, **params):
     return client.delete(f"/api/v1/applications/{app_id}/checkout", headers=tab, params=params)
 
 
-def decide(client, app_id, tab, decision="APPROVE", officer="Human Underwriter"):
-    return client.post(
-        f"/api/v1/applications/{app_id}/decision",
-        headers=tab,
-        json={"decision": decision, "officer": officer, "notes": NOTES},
-    )
+def decide(client, app_id, tab, decision="APPROVE", officer=None):
+    payload = {"decision": decision, "notes": NOTES}
+    if officer is not None:
+        payload["officer"] = officer  # legacy field: ignored by the server
+    return client.post(f"/api/v1/applications/{app_id}/decision", headers=tab, json=payload)
 
 
 def events(client, app_id):
@@ -53,7 +55,9 @@ def events(client, app_id):
 
 
 def ident(name: str) -> UserIdentity:
-    return UserIdentity(user_id=str(uuid.uuid4()), display_name=name)
+    """A signed-in underwriter in a browser tab of their own."""
+    user = Principal(user_id=f"uw.{uuid.uuid4().hex[:8]}", display_name=name, role=Role.UNDERWRITER)
+    return UserIdentity.from_principal(user, tab_session=str(uuid.uuid4()))
 
 
 class TestLaunch:
@@ -132,12 +136,15 @@ class TestLaunch:
         assert checkout(client, escalated_app_id.lower(), tab1).status_code == 200
         assert checkout(client, escalated_app_id, tab2).status_code == 409
 
-    def test_headerless_checkout_is_held_by_the_session_issued_on_that_response(self, client, escalated_app_id):
-        """The router-level and endpoint-level identity dependencies must resolve to ONE identity per request."""
+    def test_api_client_without_a_tab_holds_the_checkout_as_the_user(self, client, escalated_app_id, test_app_db):
+        """API clients send no tab header: they hold the file as the signed-in user, across their requests."""
         res = client.post(f"/api/v1/applications/{escalated_app_id}/checkout")
         assert res.status_code == 200 and res.json()["held_by_you"] is True
-        issued = {SESSION_HEADER: res.headers[SESSION_HEADER]}
-        assert renew(client, escalated_app_id, issued).status_code == 200
+        assert SESSION_HEADER not in res.headers  # tab sessions are only issued by GET /api/v1/session
+        assert test_app_db.get_checkout(escalated_app_id)["holder_key"] == "test.operator"
+        assert renew(client, escalated_app_id, {}).status_code == 200
+        # ...while a browser tab of the same user is a different holder
+        assert checkout(client, escalated_app_id, new_tab(client)).status_code == 409
 
 
 class TestRelease:
@@ -172,18 +179,19 @@ class TestRelease:
     def test_administrator_force_release_is_audited(self, client, escalated_app_id):
         tab1, admin_tab, tab2 = new_tab(client), new_tab(client), new_tab(client)
         checkout(client, escalated_app_id, tab1)
-        res = release(client, escalated_app_id, admin_tab, force="true", actor="Ops Admin")
+        res = release(client, escalated_app_id, admin_tab, force="true", actor="Somebody Else")  # actor: ignored
         assert res.json()["released"] is True
         trail = client.get(f"/api/v1/applications/{escalated_app_id}/audit-trail").json()
         forced = [e for e in trail if e["event_type"] == "CHECKOUT_FORCE_RELEASED"]
-        assert forced and forced[0]["actor"] == "Ops Admin" and label(client, tab1) in forced[0]["details"]
+        assert forced and forced[0]["actor"] == "Test Operator (test.operator)"  # the signed-in administrator
+        assert label(client, tab1) in forced[0]["details"] and "Somebody Else" not in str(trail)
         assert checkout(client, escalated_app_id, tab2).status_code == 200
 
     def test_force_release_is_final_for_the_open_review(self, client, escalated_app_id):
         """The holder's heartbeat must not silently re-acquire a file an administrator released."""
         tab1, admin_tab = new_tab(client), new_tab(client)
         checkout(client, escalated_app_id, tab1)
-        release(client, escalated_app_id, admin_tab, force="true", actor="Ops Admin")
+        release(client, escalated_app_id, admin_tab, force="true")
         res = renew(client, escalated_app_id, tab1)
         assert res.status_code == 409 and "no longer active" in res.json()["detail"]
         assert client.get(f"/api/v1/applications/{escalated_app_id}").json()["checkout"] is None
@@ -244,7 +252,7 @@ class TestDecisionEnforcement:
         assert test_app_db.get_application(escalated_app_id)["status"] == "PENDING_REVIEW"
 
     def test_typed_officer_name_does_not_grant_access(self, client, escalated_app_id):
-        """Exclusivity is keyed on the session, not on the free-text officer name."""
+        """Exclusivity is keyed on the signed-in user + tab, not on a free-text officer name."""
         tab1, tab2 = new_tab(client), new_tab(client)
         checkout(client, escalated_app_id, tab1)
         assert decide(client, escalated_app_id, tab2, officer=label(client, tab1)).status_code == 409
@@ -252,10 +260,10 @@ class TestDecisionEnforcement:
     def test_holder_decides_and_checkout_is_released(self, client, escalated_app_id, test_app_db):
         tab = new_tab(client)
         checkout(client, escalated_app_id, tab)
-        res = decide(client, escalated_app_id, tab, "DENY", officer="Ms. Some Name, Credit Committee")
+        res = decide(client, escalated_app_id, tab, "DENY")
         assert res.status_code == 200
         body = res.json()
-        assert body["status"] == "HUMAN_DENIED" and body["adjudication"]["officer"] == "Ms. Some Name, Credit Committee"
+        assert body["status"] == "HUMAN_DENIED" and body["adjudication"]["officer"] == "Test Operator"
         assert body["checkout"] is None and test_app_db.get_checkout(escalated_app_id) is None
 
     def test_decision_without_prior_checkout_takes_one_implicitly(self, client, escalated_app_id, test_app_db):
@@ -274,7 +282,7 @@ class TestDecisionEnforcement:
         checkout(client, escalated_app_id, tab1)
         assert decide(client, escalated_app_id, tab1).status_code == 409
         row = test_app_db.get_checkout(escalated_app_id)
-        assert row["holder_key"] == tab1[SESSION_HEADER] and row["state"] == "ACTIVE"
+        assert row["holder_key"] == f"test.operator#{tab1[SESSION_HEADER]}" and row["state"] == "ACTIVE"
         assert checkout(client, escalated_app_id, tab2).status_code == 409
 
     def test_failed_implicit_determination_leaves_no_checkout(self, client, escalated_app_id, test_app_db, monkeypatch):

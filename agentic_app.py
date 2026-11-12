@@ -1,6 +1,10 @@
 """
-app.py
-Apex Financial — Institutional Loan Underwriting & Approval Workbench.
+agentic_app.py — RETIRED. Every visit is redirected to the landing page of the FastAPI workbench (`python run_api.py`),
+which has sign-in and role-based access. Nothing below the redirect runs, so this app no longer reads or writes the
+application database. Target: APEX_WORKBENCH_URL if set, otherwise port 8000 on the host the browser used to reach
+this app. The legacy implementation below is kept for reference only and can be deleted.
+
+Apex Financial — Institutional Loan Underwriting & Approval Workbench (legacy Streamlit implementation).
 
 Agentic Underwriting Workflow:
 - Integrates the 6-node LangGraph pipeline with dual LLM reasoning agents:
@@ -71,6 +75,48 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# ---------------------------------------------------------------------------
+# RETIRED: redirect every visitor to the FastAPI workbench's landing page (sign-in / the user's home page).
+# ---------------------------------------------------------------------------
+WORKBENCH_PORT = 8000  # run_api.py default
+
+
+def workbench_landing_url() -> str:
+    """APEX_WORKBENCH_URL, else the FastAPI service on the host the browser used to reach this app."""
+    import re
+    from urllib.parse import urlsplit
+
+    configured = (os.environ.get("APEX_WORKBENCH_URL") or "").strip()
+    if configured:
+        return configured.rstrip("/") + "/"
+    host = "localhost"
+    try:
+        hostname = urlsplit("//" + (st.context.headers.get("Host") or "")).hostname or ""
+        if re.fullmatch(r"[a-z0-9.\-]+|[0-9a-f:.]+", hostname):
+            host = f"[{hostname}]" if ":" in hostname else hostname  # IPv6 literals need brackets
+    except Exception:
+        pass
+    return f"http://{host}:{WORKBENCH_PORT}/"
+
+
+def redirect_to_workbench() -> None:
+    import html
+    import inspect
+    import json
+
+    url = workbench_landing_url()
+    if "unsafe_allow_javascript" in inspect.signature(st.html).parameters:
+        # Runs in the page itself (st.html is not iframed): a real top-level redirect, without a history entry.
+        st.html(f"<script>window.location.replace({json.dumps(url)});</script>", unsafe_allow_javascript=True)
+    st.markdown("### 🏦 Apex Financial has moved")
+    st.markdown(f"The underwriting workbench is now at **{html.escape(url)}** — redirecting you there…")
+    st.link_button("Continue to the Apex Financial workbench ↗", url, type="primary")
+    st.stop()
+
+
+redirect_to_workbench()
 
 
 # ---------------------------------------------------------------------------

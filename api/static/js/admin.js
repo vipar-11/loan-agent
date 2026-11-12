@@ -111,7 +111,6 @@
       const cfg = await ApexAPI.adminUpdateScheduleConfig({
         interval_minutes: interval,
         scheduler_enabled: $('scheduler_enabled').checked,
-        updated_by: $('updated_by').value.trim() || 'Administrator',
       });
       renderConfig(cfg);
       ApexUI.showAlert(alertBox, 'success', `✅ Job frequency saved: every ${cfg.interval_minutes} minute(s), automatic runs ${cfg.scheduler_enabled ? 'enabled' : 'disabled'}.`);

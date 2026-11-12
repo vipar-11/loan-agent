@@ -1,13 +1,15 @@
 """
-/api/v1 reference & system endpoints: session identity, health, system info, demo personas, installment quotes,
-policy document.
+/api/v1 reference & system endpoints: health, system info, demo personas, installment quotes, policy document.
+
+`public_router` (liveness) needs no sign-in. Everything on `router` requires a signed-in user (applied where the
+router is mounted, see api/main.py); /system additionally requires the Administrator role.
 """
 import os
 from typing import List
 
 from fastapi import APIRouter, Depends, Query
 
-from api.dependencies import establish_user_identity, get_db
+from api.dependencies import get_db, require_permission
 from api.schemas import (
     ANNUAL_RATE,
     LOAN_AMOUNT_MAX,
@@ -18,36 +20,30 @@ from api.schemas import (
     Persona,
     PolicyDocument,
     SystemInfo,
-    UserIdentity,
 )
 from api.services import applications as app_service
 from api.services.policy import load_policy_html, load_policy_markdown
+from loan_agent.auth import Permission
 from loan_agent.calculator import calculate_monthly_installment
 from loan_agent.config import load_db_config
 from loan_agent.db import ApplicationDatabase
 from loan_agent.mock_apis import APPLICANT_PROFILES
 
 router = APIRouter(prefix="/api/v1", tags=["Reference & System"])
+public_router = APIRouter(prefix="/api/v1", tags=["Reference & System"])
 
 API_VERSION = "1.0.0"
 
 
-@router.get("/session", response_model=UserIdentity, summary="Establish / confirm the caller's session identity")
-def session_identity(identity: UserIdentity = Depends(establish_user_identity)) -> UserIdentity:
-    """
-    The workbench calls this first in every browser tab. Without the `X-Apex-Session-Id` header a new session token
-    is issued (`is_new_session: true`, token in `user_id` and in the `X-Apex-Session-Id` response header); the tab
-    stores it in sessionStorage and sends it on every later call. With the header, the same identity is confirmed.
-    """
-    return identity
-
-
-@router.get("/health", summary="Liveness probe")
+@public_router.get("/health", summary="Liveness probe (no sign-in required)")
 def health() -> dict:
     return {"status": "ok"}
 
 
-@router.get("/system", response_model=SystemInfo, summary="Runtime configuration & queue overview")
+@router.get(
+    "/system", response_model=SystemInfo, summary="Runtime configuration & queue overview",
+    dependencies=[Depends(require_permission(Permission.SYSTEM_ADMINISTER))],
+)
 def system_info(db: ApplicationDatabase = Depends(get_db)) -> SystemInfo:
     return SystemInfo(
         version=API_VERSION,

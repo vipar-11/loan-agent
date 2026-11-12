@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Apex Financial — Page not found{% endblock %}
+{% block subtitle %}Page not found{% endblock %}
+
+{% block content %}
+<div class="fin-card" style="max-width:640px;">
+  <div class="card-title" style="margin-bottom:6px;">Page not found</div>
+  <div class="card-sub" style="margin-bottom:14px;">The page you requested could not be found. Check the address, or return to your workspace.</div>
+  {% if user.home_path %}<a class="btn btn-primary" href="{{ user.home_path }}">Go to my workspace</a>{% endif %}
+</div>
+{% endblock %}

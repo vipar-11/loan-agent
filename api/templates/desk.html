@@ -34,12 +34,95 @@
 
 <!-- TAB: PENDING REVIEW -->
 <section class="tab-panel active" data-scope="desk" data-panel="pending">
-  <div class="section-label">Escalated Queue Items — Click to Open Review Modal</div>
+  <div class="get-work-bar">
+    <button type="button" class="btn btn-primary" id="btn-get-work">⚡ Get Work</button>
+    <div class="card-sub">Opens the highest-priority file for you — the longest-waiting one that nobody else has open.
+      After each decision you can keep going with the next file automatically. Or cherry-pick a file from the queue below.</div>
+  </div>
+  <div class="alert alert-info" id="checkout-notice" style="font-size:0.78rem;">
+    🔒 <strong>One reviewer per file.</strong> A file you open for review is checked out to you in this browser tab
+    only: other reviewers — and your other tabs — cannot open it until you close it (or after {{ checkout_ttl_minutes }} minutes of inactivity).
+    Files open elsewhere are marked <em>Checked out by another session</em>.
+  </div>
+  <form class="filter-bar" id="pending-filters" autocomplete="off" novalidate>
+    <div>
+      <label class="field-label" for="pf-q">Search</label>
+      <input type="text" id="pf-q" name="q" maxlength="120" placeholder="Borrower name or reference #" />
+    </div>
+    <div>
+      <label class="field-label" for="pf-purpose">Loan Purpose</label>
+      <select id="pf-purpose" name="loan_purpose">
+        <option value="">All purposes</option>
+        {% for p in loan_purposes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="field-label" for="pf-min">Min Amount ($)</label>
+      <input type="number" id="pf-min" name="min_amount" min="0" step="1000" placeholder="Any" />
+    </div>
+    <div>
+      <label class="field-label" for="pf-max">Max Amount ($)</label>
+      <input type="number" id="pf-max" name="max_amount" min="0" step="1000" placeholder="Any" />
+    </div>
+    <div>
+      <label class="field-label" for="pf-from">Submitted From</label>
+      <input type="date" id="pf-from" name="submitted_from" />
+    </div>
+    <div>
+      <label class="field-label" for="pf-to">Submitted To</label>
+      <input type="date" id="pf-to" name="submitted_to" />
+    </div>
+    <div class="filter-actions"><button type="reset" class="btn btn-sm">✕ Clear</button></div>
+  </form>
+  <div class="filter-summary" id="pending-summary"></div>
+  <div class="section-label">Escalated Queue Items — Oldest First (longest-waiting files at the top)</div>
   <div id="pending-queue"></div>
 </section>
 
 <!-- TAB: ARCHIVE -->
 <section class="tab-panel" data-scope="desk" data-panel="archive">
+  <form class="filter-bar" id="archive-filters" autocomplete="off" novalidate>
+    <div>
+      <label class="field-label" for="af-q">Search</label>
+      <input type="text" id="af-q" name="q" maxlength="120" placeholder="Borrower name or reference #" />
+    </div>
+    <div>
+      <label class="field-label" for="af-purpose">Loan Purpose</label>
+      <select id="af-purpose" name="loan_purpose">
+        <option value="">All purposes</option>
+        {% for p in loan_purposes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="field-label" for="af-min">Min Amount ($)</label>
+      <input type="number" id="af-min" name="min_amount" min="0" step="1000" placeholder="Any" />
+    </div>
+    <div>
+      <label class="field-label" for="af-max">Max Amount ($)</label>
+      <input type="number" id="af-max" name="max_amount" min="0" step="1000" placeholder="Any" />
+    </div>
+    <div>
+      <label class="field-label" for="af-from">Submitted From</label>
+      <input type="date" id="af-from" name="submitted_from" />
+    </div>
+    <div>
+      <label class="field-label" for="af-to">Submitted To</label>
+      <input type="date" id="af-to" name="submitted_to" />
+    </div>
+    <div>
+      <label class="field-label" for="af-outcome">Outcome</label>
+      <select id="af-outcome" name="status">
+        <option value="">All outcomes</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Denied</option>
+      </select>
+    </div>
+    <div class="filter-check">
+      <label class="checkbox-row"><input type="checkbox" id="af-mine" name="decided_by_me" value="true" /> Only decisions I made</label>
+    </div>
+    <div class="filter-actions"><button type="reset" class="btn btn-sm">✕ Clear</button></div>
+  </form>
+  <div class="filter-summary" id="archive-summary"></div>
   <div id="archive-table"></div>
   <div id="archive-inspector" class="hidden">
     <hr />

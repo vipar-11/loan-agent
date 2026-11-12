@@ -1,16 +1,21 @@
 """
 /api/v1/workflows — the "initiate workflow" job (API equivalent of the initiate_workflow scheduler) and queue stats.
+
+Running the workflow requires the Administrator role (workflow:run); queue stats require application:read.
 """
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
-from api.dependencies import get_checkpointer, get_db
+from api.dependencies import get_checkpointer, get_db, require_permission
 from api.schemas import Message, QueueStats, WorkflowRun, WorkflowRunAccepted, WorkflowRunRequest, WorkflowRunSummary
 from api.services import applications as app_service
 from api.services import scheduler as scheduler_service
 from api.services import workflows as workflow_service
+from loan_agent.auth import Permission
 from loan_agent.db import ApplicationDatabase
+
+RUN_WORKFLOWS = [Depends(require_permission(Permission.WORKFLOW_RUN))]
 
 router = APIRouter(prefix="/api/v1", tags=["Workflows"])
 
@@ -20,6 +25,7 @@ router = APIRouter(prefix="/api/v1", tags=["Workflows"])
     response_model=WorkflowRunAccepted | WorkflowRunSummary,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Initiate the approval workflow for all NEW applications",
+    dependencies=RUN_WORKFLOWS,
 )
 def run_pending_workflows(
     payload: WorkflowRunRequest,
@@ -53,7 +59,10 @@ def run_pending_workflows(
     )
 
 
-@router.get("/workflows/runs/{run_id}", response_model=WorkflowRun, responses={404: {"model": Message}})
+@router.get(
+    "/workflows/runs/{run_id}", response_model=WorkflowRun, responses={404: {"model": Message}},
+    dependencies=RUN_WORKFLOWS,
+)
 def get_workflow_run(run_id: int, db: ApplicationDatabase = Depends(get_db)) -> WorkflowRun:
     run = db.get_workflow_run(run_id)
     if not run:
@@ -61,6 +70,9 @@ def get_workflow_run(run_id: int, db: ApplicationDatabase = Depends(get_db)) -> 
     return WorkflowRun(**run)
 
 
-@router.get("/stats", response_model=QueueStats, summary="Queue statistics")
+@router.get(
+    "/stats", response_model=QueueStats, summary="Queue statistics",
+    dependencies=[Depends(require_permission(Permission.APPLICATION_READ))],
+)
 def get_stats(db: ApplicationDatabase = Depends(get_db)) -> QueueStats:
     return app_service.queue_stats(db)

@@ -3,6 +3,8 @@ list_loans.py
 Admin tool to query loan applications by status, via the underwriting service REST API
 (GET /api/v1/applications, GET /api/v1/stats). Requires the service to be running
 (`python run_api.py`); target it with --api-url or LOAN_AGENT_API_URL.
+Signs in as an Administrator: --user USER_ID (or LOAN_AGENT_USER) with the password from LOAN_AGENT_PASSWORD or a
+prompt, or a bearer token in LOAN_AGENT_TOKEN.
 
 Executable via:
   python -m list_loans

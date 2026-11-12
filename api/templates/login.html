@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Apex Financial — Sign in</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏦</text></svg>" />
+  <link rel="stylesheet" href="/static/css/apex.css" />
+</head>
+<body class="auth-body" data-next="{{ next_path }}" data-min-length="{{ password_min_length }}">
+<main class="auth-shell">
+  <div class="auth-card">
+    <div class="auth-brand">🏦 Apex Financial</div>
+    <div class="auth-sub">Personal Loan Underwriting Workbench</div>
+
+    <div id="auth-alert"></div>
+    <div id="auth-loading" class="txt-muted" style="font-size:0.8rem;"><span class="spinner"></span> Checking your session…</div>
+
+    <!-- STEP 1: sign in with user ID & password (further sign-in options, e.g. SSO, are listed below it) -->
+    <form id="sign-in-form" class="hidden" novalidate>
+      <label class="field-label" for="user_id">User ID</label>
+      <input type="text" id="user_id" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+      <label class="field-label" for="password" style="margin-top:10px;">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" />
+      <button type="submit" class="btn btn-primary btn-block" id="btn-sign-in" style="margin-top:14px;">Sign in</button>
+      <div id="sso-options"></div>
+      <div class="auth-hint" style="margin-top:12px;">Forgot your password? Contact your support team to have it reset.</div>
+    </form>
+    <div class="auth-foot hidden" id="signup-link"><a href="/signup">New applicant? Create an account</a></div>
+
+    <!-- STEP 2: set a password (first sign-in / after a reset) or change it (from the profile menu) -->
+    <form id="password-form" class="hidden" novalidate>
+      <div class="card-title" id="password-title">Choose your password</div>
+      <div class="card-sub" id="password-intro" style="margin:4px 0 10px 0;"></div>
+      <div id="current-password-row">
+        <label class="field-label" for="current_password">Current password</label>
+        <input type="password" id="current_password" autocomplete="current-password" />
+      </div>
+      <label class="field-label" for="new_password" style="margin-top:10px;">New password</label>
+      <input type="password" id="new_password" autocomplete="new-password" />
+      <label class="field-label" for="confirm_password" style="margin-top:10px;">Confirm new password</label>
+      <input type="password" id="confirm_password" autocomplete="new-password" />
+      <button type="submit" class="btn btn-primary btn-block" id="btn-save-password" style="margin-top:14px;">Save password</button>
+      <div style="display:flex; justify-content:space-between; margin-top:10px; font-size:0.78rem;">
+        <a href="#" id="link-cancel-change" class="hidden">← Back</a>
+        <a href="#" id="link-sign-out">Sign out</a>
+      </div>
+    </form>
+  </div>
+</main>
+<script src="/static/js/login.js"></script>
+</body>
+</html>

@@ -79,8 +79,7 @@
         Run the job automatically from this service at the configured interval.
         <span class="txt-muted" style="font-size:0.72rem;">(Uncheck if an external scheduler such as cron runs <code>initiate_workflow</code>; the monitor still tracks those runs.)</span>
       </label>
-      <label class="field-label" for="updated_by" style="margin-top:12px;">Changed by</label>
-      <input type="text" id="updated_by" value="Administrator" />
+      <div class="card-sub" style="margin-top:12px;">Changes are recorded against your user (<span class="mono">{{ user.user_id }}</span>).</div>
       <div class="card-sub" id="config-meta" style="margin-top:10px;"></div>
       <div style="margin-top:14px; display:flex; gap:10px;">
         <button type="submit" class="btn btn-primary" id="btn-save-config">Save Configuration</button>

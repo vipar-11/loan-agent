@@ -5,12 +5,17 @@ FastAPI application factory for the Apex Financial Autonomous Underwriting servi
     python run_api.py
 
 Endpoints:
-    /portal, /desk            Server-rendered workbench (Applicant Portal, Underwriter Desk)
+    /login                    Sign-in page
+    /portal, /desk, /admin    Server-rendered workbench (Applicant Portal, Underwriter Desk, Administrator console)
+    /api/v1/auth/...          Sign-in / sign-out / password change
     /api/v1/...               JSON API (see /docs for the interactive OpenAPI reference)
+
+Authentication: every page and API endpoint requires a signed-in user, except the sign-in endpoints and the liveness
+probe. Access is role-based (see loan_agent/auth/roles.py).
 """
 import asyncio
 import logging
-from typing import Optional
+from typing import List, Optional
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -19,11 +24,12 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from api.dependencies import SESSION_HEADER, establish_user_identity
-from api.routers import admin, applications, pages, reference, workflows
+from api.dependencies import SESSION_HEADER, require_signed_in
+from api.routers import admin, applications, auth, pages, reference, workflows
+from api.security import RequestAuthenticator, default_authenticators, default_sign_in_options
 from api.services import batch_intake as intake_service
 from api.services import scheduler as scheduler_service
-from loan_agent.config import IntakeConfig, load_intake_config
+from loan_agent.config import AuthConfig, IntakeConfig, load_auth_config, load_intake_config
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -37,6 +43,10 @@ Enterprise-grade, FCRA & GLBA-compliant personal installment loan underwriting s
   or in batch.
 * **AUTO_APPROVED / AUTO_DENIED** files settle immediately; **ESCALATE** files pause at the
   human-in-the-loop breakpoint and await `POST /api/v1/applications/{id}/decision`.
+
+**Authentication.** Sign in with `POST /api/v1/auth/token` (or the **Authorize** button on this page: enter your user
+ID and password) and send `Authorization: Bearer <token>`. The browser workbench uses `POST /api/v1/auth/login`
+(session cookie). Access is role-based.
 """
 
 
@@ -76,6 +86,8 @@ def create_app(
     scheduler_enabled: bool = True,
     intake_enabled: Optional[bool] = None,
     intake_config: Optional[IntakeConfig] = None,
+    auth_config: Optional[AuthConfig] = None,
+    authenticators: Optional[List[RequestAuthenticator]] = None,
 ) -> FastAPI:
     """
     Application factory.
@@ -84,6 +96,8 @@ def create_app(
     rely exclusively on an external cron).
     `intake_enabled` controls the partner batch-intake folder monitor; by default it runs when background jobs are
     enabled (`scheduler_enabled`) and batch_intake.ini has `enabled = true`.
+    `auth_config` defaults to auth.ini; `authenticators` replaces the request-authenticator chain (default: bearer
+    token, then session cookie) — the hook for adding SSO / IdP-token authentication (see api/security.py).
     """
     app = FastAPI(
         title="Apex Financial — Autonomous Underwriting API",
@@ -101,29 +115,41 @@ def create_app(
     )
     app.state.intake_task = None
 
+    # Authentication wiring (see api/security.py). `authenticators` is the extension point for token-based / SSO
+    # mechanisms: each request is offered to them in order. `sign_in_options` is what the sign-in page offers;
+    # `password_verifier_factory(db, config)` checks user ID / password sign-ins (local user directory by default).
+    app.state.auth_config = auth_config or load_auth_config()
+    app.state.authenticators = list(authenticators) if authenticators is not None else default_authenticators(
+        app.state.auth_config
+    )
+    app.state.sign_in_options = default_sign_in_options()
+    app.state.password_verifier_factory = None  # None -> loan_agent.auth.LocalPasswordVerifier
+
     @app.middleware("http")
     async def echo_session_identity(request, call_next):
         """
-        Returns the session token established by `establish_user_identity()` on EVERY API response, including
-        error responses (headers set by a dependency are dropped when the endpoint raises, e.g. 404 / 409).
+        Returns the browser-tab session token established by `establish_user_identity()` on EVERY API response,
+        including error responses (headers set by a dependency are dropped when the endpoint raises, e.g. 404 / 409).
         """
         response = await call_next(request)
         identity = getattr(request.state, "identity", None)
-        if identity is not None and identity.auth_method == "anonymous-session":
-            response.headers[SESSION_HEADER] = identity.user_id
+        if identity is not None and identity.tab_session:
+            response.headers[SESSION_HEADER] = identity.tab_session
         return response
 
-    # Every JSON API call establishes the caller's identity (and echoes the session header back).
-    # Page routes are excluded: a browser navigation cannot carry the header; the page's scripts establish
-    # the session with their first API call (GET /api/v1/session).
-    identity = [Depends(establish_user_identity)]
-    app.include_router(reference.router, dependencies=identity)
-    app.include_router(applications.router, dependencies=identity)
-    app.include_router(workflows.router, dependencies=identity)
-    app.include_router(admin.router, dependencies=identity)
-    app.include_router(pages.router)
-
+    # Public: sign-in endpoints and the liveness probe.
+    app.include_router(auth.router)
+    app.include_router(reference.public_router)
+    # Everything else requires a signed-in user (secure by default); endpoints add their role permissions on top.
+    signed_in = [Depends(require_signed_in)]
+    app.include_router(reference.router, dependencies=signed_in)
+    app.include_router(applications.router, dependencies=signed_in)
+    app.include_router(workflows.router, dependencies=signed_in)
+    app.include_router(admin.router, dependencies=signed_in)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    # Pages check sign-in and roles themselves (redirecting to /login instead of answering 401). Registered LAST:
+    # its catch-all route answers every other path exactly like a page the user may not open.
+    app.include_router(pages.router)
     return app
 
 

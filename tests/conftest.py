@@ -160,6 +160,10 @@ def isolate_test_environment(monkeypatch, tmp_path) -> Generator[None, None, Non
     Any partner batch-intake monitor started by a test works on a per-test temporary folder, never data/intake.
     """
     monkeypatch.setenv("BATCH_INTAKE_ROOT", str(tmp_path / "intake"))
+    # Password hashing at production cost is deliberately slow; tests use a cheap (still valid) scrypt cost.
+    monkeypatch.setattr("loan_agent.auth.passwords.SCRYPT_N", 2 ** 8)
+    for var in ("LOAN_AGENT_TOKEN", "LOAN_AGENT_USER", "LOAN_AGENT_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
     import loan_agent.db as db_mod
     import loan_agent.checkpointer as cp_mod
 
@@ -340,3 +344,41 @@ def categorized_transactions_distressed() -> List[Dict[str, Any]]:
         {"tx_id": "M06", "category": "UNDISCLOSED_DEBT_PAYMENT", "amount": -450.00},
         {"tx_id": "M07", "category": "ONE_OFF_GIFT_OR_TRANSFER_IGNORE", "amount": 500.00},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Authentication helpers
+#
+# Functional API tests exercise business behaviour (pipelines, checkouts, intake...), not access control: they run
+# as OPERATOR, a signed-in test principal holding every permission, injected through the authentication seam
+# (api.dependencies.resolve_principal). Sign-in, sessions and role enforcement are tested end-to-end WITHOUT any
+# override in test_auth.py and test_rbac.py.
+# ---------------------------------------------------------------------------
+from loan_agent.auth import Permission, Principal, Role  # noqa: E402
+
+OPERATOR = Principal(
+    user_id="test.operator", display_name="Test Operator", role=Role.ADMINISTRATOR, permissions=frozenset(Permission)
+)
+
+
+def sign_in_as(app, principal: Principal = OPERATOR) -> None:
+    """Makes every request to `app` authenticated as `principal` (dependency override of the auth seam)."""
+    from api.dependencies import resolve_principal
+
+    app.dependency_overrides[resolve_principal] = lambda: principal
+
+
+def create_user_with_password(db, user_id: str, role: Role, password: str = "Correct-Horse-9", name=None) -> dict:
+    """A real account (as manage_users.py creates it) that has already chosen `password`."""
+    from loan_agent.auth import users
+    from loan_agent.config import AuthConfig
+
+    users.create_user(db, user_id, role, name)
+    return users.change_password(db, user_id, "", password, AuthConfig())
+
+
+def bearer_headers(client, user_id: str, password: str = "Correct-Horse-9") -> dict:
+    """Signs in through POST /api/v1/auth/token and returns the Authorization header for that user."""
+    res = client.post("/api/v1/auth/token", data={"username": user_id, "password": password})
+    assert res.status_code == 200, res.text
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}

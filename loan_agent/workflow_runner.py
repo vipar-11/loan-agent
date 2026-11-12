@@ -181,10 +181,14 @@ def resume_with_human_decision(
     app_db: Optional[ApplicationDatabase] = None,
     checkpointer: Optional[Any] = None,
     config: Optional[DatabaseConfig] = None,
+    officer_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Human-in-the-loop resumption: injects the credit officer's determination into the paused graph
     (`update_state`) and resumes execution (`invoke(None)`) through human_review_node -> finalize.
+
+    `officer_user_id` is the signed-in officer's stable user ID (the API always passes it); it is stored on the
+    adjudication and in the audit-trail actor alongside the officer's name.
 
     Falls back to a synthesized final state if the checkpoint cannot be resumed, so the officer's
     determination is never lost. Returns the updated, persisted application record.
@@ -238,10 +242,12 @@ def resume_with_human_decision(
         "agent_notes": graph_state.get("underwriter_memo"),
         "policy_citations": graph_state.get("policy_citations"),
     }
+    if officer_user_id:
+        adjudication["officer_user_id"] = officer_user_id
     db.update_application(
         application_id=app_id,
         updates={"status": final_status, "graph_state": final_result, "adjudication": adjudication},
-        actor=officer_clean,
+        actor=f"{officer_clean} ({officer_user_id})" if officer_user_id else officer_clean,
         event_type="HUMAN_REVIEW_DECISION",
         details=f"Human determination recorded: {final_status}. Reason: {notes_clean}",
     )
@@ -264,8 +270,9 @@ def run_initiate_workflow(
     cp = checkpointer or get_langgraph_checkpointer(cfg)
 
     # Fetch new loans (oldest first for FIFO processing)
+    # FIFO: oldest submission first; the (sequential) reference number breaks ties within the same second.
     new_loans = db.list_applications(status="new")
-    new_loans.sort(key=lambda x: x.get("submitted_at") or "")
+    new_loans.sort(key=lambda x: (x.get("submitted_at") or "", x.get("application_id") or ""))
 
     total_found = len(new_loans)
     if limit is not None and limit > 0:

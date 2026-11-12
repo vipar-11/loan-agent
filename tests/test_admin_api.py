@@ -14,6 +14,7 @@ from api.main import create_app
 from api.services import scheduler as sched
 from loan_agent.db import main_status_for
 from loan_agent.mock_apis import APPLICANT_PROFILES
+from tests.conftest import sign_in_as
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def client(test_app_db, test_checkpointer) -> Generator[TestClient, None, None]:
     app = create_app(scheduler_enabled=False)
     app.dependency_overrides[get_db] = lambda: test_app_db
     app.dependency_overrides[get_checkpointer] = lambda: test_checkpointer
+    sign_in_as(app)  # functional tests run as the all-permissions test operator (see conftest.py)
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -66,10 +68,12 @@ class TestScheduleConfiguration:
         assert cfg == {"interval_minutes": 2, "scheduler_enabled": True, "updated_at": None, "updated_by": None}
 
     def test_update_and_persist(self, client, test_app_db):
+        # The change is recorded against the signed-in administrator; a caller-supplied name is ignored.
         res = client.put("/api/v1/admin/scheduler/config", json={"interval_minutes": 15, "updated_by": "Ops Admin"})
         assert res.status_code == 200
         cfg = res.json()
-        assert cfg["interval_minutes"] == 15 and cfg["scheduler_enabled"] is True and cfg["updated_by"] == "Ops Admin"
+        assert cfg["interval_minutes"] == 15 and cfg["scheduler_enabled"] is True
+        assert cfg["updated_by"] == "Test Operator (test.operator)"
         assert cfg["updated_at"]
         # Persisted in the database (survives a restart), not just in memory
         assert test_app_db.get_setting("initiate_workflow.interval_minutes") == "15"

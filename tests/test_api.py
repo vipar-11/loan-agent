@@ -14,6 +14,7 @@ from api.dependencies import get_checkpointer, get_db
 from api.main import create_app
 from loan_agent.db import ApplicationDatabase
 from loan_agent.mock_apis import APPLICANT_PROFILES
+from tests.conftest import sign_in_as
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def client(test_app_db: ApplicationDatabase, test_checkpointer) -> Generator[Tes
     app = create_app(scheduler_enabled=False)
     app.dependency_overrides[get_db] = lambda: test_app_db
     app.dependency_overrides[get_checkpointer] = lambda: test_checkpointer
+    sign_in_as(app)  # functional tests run as the all-permissions test operator (see conftest.py)
     # Lifespan warm-up is bypassed deliberately (it would touch the real singleton factories).
     with TestClient(app) as c:
         yield c
@@ -327,18 +329,23 @@ class TestHumanInTheLoop:
         assert labels and all(v != "— Select Classification —" for v in labels.values())
 
     def test_human_approval_resumes_graph(self, client, escalated_app_id, test_app_db):
-        payload = {"decision": "APPROVE", "officer": "Human Underwriter, Credit Committee", "notes": "Verified W-2; bonus structure explains variance."}
+        # A caller-supplied officer name (legacy field) is ignored: the determination belongs to the signed-in user.
+        payload = {"decision": "APPROVE", "officer": "Somebody Else", "notes": "Verified W-2; bonus structure explains variance."}
         res = client.post(f"/api/v1/applications/{escalated_app_id}/decision", json=payload)
         assert res.status_code == 200
         body = res.json()
         assert body["status"] == "HUMAN_APPROVED"
         assert body["stage"] == "ADJUDICATED"
         assert body["adjudicator_type"] == "HUMAN_OFFICER"
-        assert body["adjudication"]["officer"] == "Human Underwriter, Credit Committee"
+        assert body["adjudication"]["officer"] == "Test Operator"
+        assert body["adjudication"]["officer_user_id"] == "test.operator"
+        assert "Somebody Else" not in res.text
         assert body["adjudication"]["reason"] == payload["notes"]
         assert body["graph_state"]["human_reviewer_decision"] == "APPROVE"
         assert any("Human Underwriter Override" in line for line in body["graph_state"]["execution_log"])
-        assert "HUMAN_REVIEW_DECISION" in [t["event_type"] for t in test_app_db.get_audit_trail(escalated_app_id)]
+        decision_event = next(t for t in test_app_db.get_audit_trail(escalated_app_id)
+                              if t["event_type"] == "HUMAN_REVIEW_DECISION")
+        assert decision_event["actor"] == "Test Operator (test.operator)"
 
         # Queue moved: pending -> adjudicated
         assert client.get("/api/v1/applications", params={"status": "pending_review"}).json() == []

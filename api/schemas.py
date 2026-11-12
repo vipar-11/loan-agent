@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from loan_agent.auth.roles import PAGES
+
 LoanPurpose = Literal[
     "Home Improvement",
     "Debt Consolidation",
@@ -56,6 +58,7 @@ class Adjudication(BaseModel):
 
     decision: Optional[str] = None
     officer: Optional[str] = None
+    officer_user_id: Optional[str] = Field(None, description="User ID of the signed-in officer (human decisions).")
     reason: Optional[str] = None
     adjudicated_at: Optional[str] = None
     policy_citations: Optional[List[str]] = None
@@ -66,17 +69,102 @@ class Adjudication(BaseModel):
 
 class UserIdentity(BaseModel):
     """
-    Who is calling. Today: an anonymous per-browser-tab session established by `establish_user_identity()`.
-    When authentication is introduced, the same model carries the authenticated principal.
+    The signed-in caller, as established by `establish_user_identity()`: the authenticated principal (whatever the
+    sign-in mechanism) plus, for the browser workbench, the tab it is calling from.
     """
 
-    user_id: str = Field(..., description="Opaque identity key. For anonymous sessions: the tab's session token.")
-    display_name: str = Field(..., examples=["Session 3F9A1C02"], description="Safe-to-share label (never the token).")
+    user_id: str = Field(..., examples=["uw.jane"], description="Stable user ID of the signed-in user.")
+    display_name: str = Field(..., examples=["Jane Doe"])
+    role: str = Field(..., examples=["UNDERWRITER"])
+    role_label: str = Field(..., examples=["Loan Underwriter"])
+    permissions: List[str] = Field(default_factory=list, examples=[["application:read", "application:underwrite"]])
     auth_method: str = Field(
-        "anonymous-session", examples=["anonymous-session"],
-        description="How the identity was established (future authentication plug-ins report their own method).",
+        "password", examples=["password"],
+        description="How the user signed in (future SSO / token mechanisms report their own method).",
     )
-    is_new_session: bool = Field(False, description="True when the server issued a new session token on this request.")
+    password_change_required: bool = Field(
+        False, description="True when the user must choose a new password: the session may only do that "
+                           "(POST /api/v1/auth/password).",
+    )
+    home_path: Optional[str] = Field(None, examples=["/desk"], description="Workbench page to land on after sign-in.")
+    pages: List[str] = Field(default_factory=list, examples=[["/desk"]], description="Workbench pages the user may open.")
+    is_new_session: bool = Field(False, description="True when the server issued a new browser-tab session token.")
+    tab_session: Optional[str] = Field(None, exclude=True)  # never serialized; echoed in X-Apex-Session-Id only
+
+    @classmethod
+    def from_principal(cls, principal: Any, tab_session: Optional[str] = None,
+                       is_new_session: bool = False) -> "UserIdentity":
+        return cls(
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+            role=principal.role.value,
+            role_label=principal.role_label,
+            permissions=sorted(p.value for p in principal.permissions),
+            auth_method=principal.auth_method,
+            password_change_required=principal.password_change_required,
+            home_path=principal.home_path,
+            pages=[path for path, _label, permission in PAGES if permission in principal.permissions],
+            is_new_session=is_new_session,
+            tab_session=tab_session,
+        )
+
+    @property
+    def holder_key(self) -> str:
+        """Review-checkout holder: the user in one browser tab (or the user as a whole for API clients)."""
+        return f"{self.user_id}#{self.tab_session}" if self.tab_session else self.user_id
+
+    @property
+    def audit_actor(self) -> str:
+        """How this caller is recorded in the regulatory audit trail."""
+        return f"{self.display_name} ({self.user_id})"
+
+
+# ---------------------------------------------------------------------------
+# Sign-in
+# ---------------------------------------------------------------------------
+class SignupRequest(BaseModel):
+    """Self-service account creation — always the Loan Applicant role; no other role can be self-granted."""
+
+    user_id: str = Field(..., min_length=1, max_length=64, examples=["jane.doe"])
+    password: str = Field(..., min_length=1, max_length=256)
+    display_name: str = Field("", max_length=120, examples=["Jane Doe"])
+
+
+class LoginRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64, examples=["uw.jane"])
+    password: str = Field(
+        "", max_length=256,
+        description="Your password.",
+    )
+
+
+class LoginResponse(BaseModel):
+    identity: UserIdentity
+    expires_at: str = Field(..., description="Latest end of the session (it also ends after a period of inactivity).")
+    message: str
+
+
+class TokenResponse(BaseModel):
+    """OAuth2-style bearer token for API clients (send as `Authorization: Bearer <access_token>`)."""
+
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int = Field(..., description="Seconds until the token expires at the latest.")
+    password_change_required: bool = False
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field("", max_length=256, description="Your current password.")
+    new_password: str = Field(..., max_length=256)
+
+
+class SignInOption(BaseModel):
+    id: str = Field(..., examples=["local"])
+    type: Literal["password", "redirect"] = Field(
+        ..., description="`password`: POST user ID + password to `url`. `redirect`: navigate to `url` (SSO)."
+    )
+    label: str = Field(..., examples=["User ID & password"])
+    url: str
 
 
 class CheckoutInfo(BaseModel):
@@ -88,7 +176,7 @@ class CheckoutInfo(BaseModel):
         description="Your own label when you hold the checkout; otherwise always \"another session\" (the holder "
                     "is never disclosed to other sessions).",
     )
-    held_by_you: bool = Field(False, description="True when the calling session holds this checkout.")
+    held_by_you: bool = Field(False, description="True when the caller (this user in this browser tab) holds it.")
     checked_out_at: str
     expires_at: str = Field(..., description="Lease end; renewed by heartbeats while the review stays open.")
     state: Literal["ACTIVE", "DECIDING"] = "ACTIVE"
@@ -114,6 +202,7 @@ class ApplicationSummary(BaseModel):
     fcra_consent: bool
     status: str
     stage: Literal["NEW", "PROCESSING", "PENDING_REVIEW", "ADJUDICATED"]
+    submitted_by: Optional[str] = Field(None, description="User ID of the self-service applicant, if any.")
     submitted_at: Optional[str] = None
     updated_at: Optional[str] = None
     estimated_monthly_payment: Optional[float] = None
@@ -130,9 +219,52 @@ class ApplicationDetail(ApplicationSummary):
     graph_state: Optional[Dict[str, Any]] = None
 
 
+class NextReviewResponse(BaseModel):
+    """Get Work: the file now checked out to the caller, or nothing when no file is available."""
+
+    application: Optional[ApplicationSummary] = None
+    checkout: Optional[CheckoutInfo] = None
+    message: str
+
+
 class ApplicationCreateResponse(BaseModel):
     application: ApplicationDetail
     message: str
+
+
+class SlaInfo(BaseModel):
+    """Apex Financial's published decision commitment: a determination within 3 business days of submission."""
+
+    business_days: int = Field(..., examples=[3])
+    due_at: Optional[str] = Field(None, description="Expected decision time; not set once a decision is recorded.")
+    business_days_remaining: Optional[int] = Field(
+        None, description="Business days until due_at (negative once overdue); not set once decided."
+    )
+    state: Literal["ON_TRACK", "DUE_SOON", "OVERDUE", "DECIDED"]
+    decided_within_sla: Optional[bool] = Field(None, description="Set once a decision is recorded.")
+    message: str = Field(..., examples=["On track: a decision is expected by 2026-01-08 09:00:00 (our "
+                                        "3-business-day target)."])
+
+
+class MyApplicationStatus(BaseModel):
+    """
+    What a Loan Applicant sees about their own application: no internal adjudicator memos, policy citations, or
+    review-checkout details — just enough to track status, plus the decision SLA. ECOA adverse action reasons ARE
+    included on a denial (the law requires disclosing them to the applicant).
+    """
+
+    application_id: str
+    applicant_name: str
+    loan_amount_requested: float
+    loan_purpose: str
+    submitted_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    status_label: str = Field(..., examples=["Under Review"])
+    main_status: str = Field(..., examples=["pending review"])
+    decision_code: Optional[str] = Field(None, examples=["AUTO_APPROVED"])
+    decided_at: Optional[str] = None
+    adverse_action_reasons: Optional[List[str]] = None
+    sla: SlaInfo
 
 
 class AuditEvent(BaseModel):
@@ -233,9 +365,10 @@ class ScheduleConfig(BaseModel):
 
 
 class ScheduleConfigUpdate(BaseModel):
+    """The change is recorded against the signed-in user (`updated_by`)."""
+
     interval_minutes: Optional[int] = Field(None, ge=1, le=1440)
     scheduler_enabled: Optional[bool] = None
-    updated_by: str = Field("Administrator", max_length=120)
 
 
 class SchedulerStatus(BaseModel):
@@ -317,19 +450,13 @@ class WorkflowScheduledResponse(BaseModel):
 
 
 class HumanDecisionRequest(BaseModel):
-    decision: HumanDecision
-    officer: str = Field(
-        "Human Underwriter",
-        max_length=120,
-        description="Adjudicating officer name recorded on the determination. Exclusivity is enforced on the "
-                    "caller's session identity, which must hold the file's checkout (taken implicitly if nobody does).",
-    )
-    notes: str = Field(..., description="Mandatory credit officer justification memorandum.")
+    """
+    The adjudicating officer recorded on the determination is the signed-in underwriter; it cannot be supplied by
+    the caller. The caller (user + browser tab) must hold the file's checkout (taken implicitly if nobody does).
+    """
 
-    @field_validator("officer")
-    @classmethod
-    def _officer_default(cls, v: str) -> str:
-        return " ".join((v or "").split()) or "Human Underwriter"
+    decision: HumanDecision
+    notes: str = Field(..., description="Mandatory credit officer justification memorandum.")
 
     @field_validator("notes")
     @classmethod

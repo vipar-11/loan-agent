@@ -3,13 +3,14 @@
 
 Status monitoring by the five main statuses, initiate_workflow run health/history,
 the persisted schedule configuration, and the partner batch-intake monitor. Nothing here deletes data.
+Every endpoint requires the Administrator role (system:administer).
 """
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from api.dependencies import get_db
+from api.dependencies import get_db, require_permission
 from api.schemas import (
     IntakeBatch,
     IntakeBatchDetail,
@@ -21,13 +22,16 @@ from api.schemas import (
     ScheduleConfigUpdate,
     SchedulerStatus,
     StatusGroup,
+    UserIdentity,
     WorkflowRun,
 )
 from api.services import batch_intake as intake_service
 from api.services import scheduler as scheduler_service
+from loan_agent.auth import Permission
 from loan_agent.db import ApplicationDatabase
 
-router = APIRouter(prefix="/api/v1/admin", tags=["Administration"])
+require_administrator = require_permission(Permission.SYSTEM_ADMINISTER)
+router = APIRouter(prefix="/api/v1/admin", tags=["Administration"], dependencies=[Depends(require_administrator)])
 
 
 @router.get("/status-summary", response_model=List[StatusGroup], summary="Application counts by main status")
@@ -47,9 +51,16 @@ def get_schedule_config(db: ApplicationDatabase = Depends(get_db)) -> ScheduleCo
 
 
 @router.put("/scheduler/config", response_model=ScheduleConfig, summary="Update the run frequency / enablement")
-def update_schedule_config(payload: ScheduleConfigUpdate, db: ApplicationDatabase = Depends(get_db)) -> ScheduleConfig:
-    """Sets the expected interval (minutes) between two initiate_workflow runs and/or toggles the built-in scheduler."""
-    return scheduler_service.update_schedule_config(db, payload, actor=payload.updated_by)
+def update_schedule_config(
+    payload: ScheduleConfigUpdate,
+    db: ApplicationDatabase = Depends(get_db),
+    identity: UserIdentity = Depends(require_administrator),
+) -> ScheduleConfig:
+    """
+    Sets the expected interval (minutes) between two initiate_workflow runs and/or toggles the built-in scheduler.
+    The change is recorded against the signed-in user.
+    """
+    return scheduler_service.update_schedule_config(db, payload, actor=identity.audit_actor)
 
 
 @router.get("/workflow-runs", response_model=List[WorkflowRun], summary="Latest initiate_workflow runs")
